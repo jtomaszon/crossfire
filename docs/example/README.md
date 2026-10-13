@@ -1,6 +1,6 @@
 # A complete crossfire run, start to SHIP
 
-Every file in this folder is real output from one run, on a tiny synthetic repository (`tiny-static`), with local paths replaced by `<repo>`. It shows the most common path: someone opens a pull request, crossfire reviews it, finds problems, and a loop fixes them until both reviewers approve.
+Every file in this folder is real output from one run of crossfire 1.1.0, on a tiny synthetic repository (`tiny-static`), with local paths replaced by `<repo>`. It shows the most common path: someone opens a pull request, crossfire reviews it, finds problems, and a loop fixes them until both reviewers approve.
 
 Times are wall-clock on a Linux host with Codex and Grok Build both usable.
 
@@ -26,8 +26,8 @@ crossfire check --base main --name pr-1 \
 
 Result ([01-check-report.md](01-check-report.md)): **both reviewers ran, 2 findings**.
 
-- **BLOCKER**, found by Codex **and** Grok independently: decoded traversal escapes the public directory.
-- **CHANGES**, found by Grok: malformed percent-encoding throws out of the resolver.
+- **BLOCKER**, found by Codex **and** Grok independently: decoded parent segments escape the public directory.
+- **BLOCKER**, found by Grok: `decodeURIComponent` throws on bad percent-encoding.
 
 When two vendors flag the same place, it is real. This is what `/crossfire:review <PR>` does for you.
 
@@ -41,36 +41,32 @@ Before any fix, the spec ([02-spec.md](02-spec.md)) states the contract in EARS 
 crossfire init --slug fix-traversal --spec <spec> --plan <plan> --base main --from-check pr-1 --e2e "npm test"
 ```
 
-`--from-check` starts the loop at the **fix round** with the two findings: no builder round re-verifies the existing code first. The check counts as review pass 1.
+`--from-check` starts the loop at the **fix round** with the two findings: no builder round re-verifies the existing code first. The check counts as review pass 1, and the PR's own code as round 1, so the first crossfire builder leg is round 2 (the report's "Builder legs: 2 of 5" is that round counter).
 
-## 4. The builder fixes (about 1.5 minutes)
+## 4. The builder fixes (about 1 minute)
 
-The builder reads its brief ([04-builder-brief.md](04-builder-brief.md)), writes failing tests first, fixes, commits, and returns a structured result ([05-builder-result.json](05-builder-result.json)). For each finding it names the **broadest rule** the fix enforces, where the fix is, and tested variants:
+The builder reads its brief ([04-builder-brief.md](04-builder-brief.md)), writes failing tests first, fixes, commits, and returns a structured result ([05-builder-result.json](05-builder-result.json)). For each finding it names the **broadest rule** the fix enforces, `where` the fix is (file:line, ranges allowed), and tested variants:
 
-- F1: *a path built from untrusted input is returned only after the final normalized filesystem path is proven to be inside public/*, with 10 tested variants (literal and encoded traversal, a sibling `public-secret`, double encoding, backslashes, NUL bytes...).
-- F2: *resolvePublic never throws for any requestPath value: every untrusted-input failure is a null result*, with 4 tested variants.
+- F1, fixed at `src/serve.mjs:25-33`: *every filesystem path built from untrusted request input is accepted only after the final, fully resolved path is verified (by path.relative, not string prefix) to lie strictly inside the served base directory, and any input the filesystem could read differently from the check (NUL, backslash) is rejected*, with 9 tested variants (plain, encoded and double-encoded traversal, a sibling directory sharing the prefix, `public/` itself, backslashes, NUL bytes...).
+- F2, fixed at `src/serve.mjs:13-21`: *untrusted request input is validated and decoded without letting any exception escape; any input that cannot be parsed is rejected (null)*, with 4 tested variants.
 
 Crossfire then runs the proof command itself (G0: `npm test`, green). A builder's word is not evidence.
 
 ## 5. The breaker attacks (about 1 minute)
 
-A cold subagent that has not seen the builder's notes tries to break the fix and must prove every attack with a failing test in a throwaway worktree ([06-breaker-brief.md](06-breaker-brief.md)). Here it fuzzed 300,000 request paths and proved nothing ([07-breaker-result.json](07-breaker-result.json)); its unproven ideas (query strings, symlinks, Windows paths) are listed in its summary, each outside the spec's scope. When the breaker proves an attack, the builder gets one "harden" round before the reviewers see the branch.
+A cold subagent that has not seen the builder's notes tries to break the fix and must prove every attack with a failing test in a throwaway worktree ([06-breaker-brief.md](06-breaker-brief.md)). Here it fuzzed 300,000 request paths and proved nothing ([07-breaker-result.json](07-breaker-result.json)); its unproven ideas (Windows path semantics, query strings, symlinks) are listed in its summary, each outside the spec's scope or not provable on this platform. When the breaker proves an attack, the builder gets one "harden" round before the reviewers see the branch.
 
 ## 6. Review pass 2: both approve
 
-Codex approved in 41 seconds, Grok in about 10 minutes ([08-review-pass2-codex.json](08-review-pass2-codex.json), [08-review-pass2-grok.json](08-review-pass2-grok.json)). Both reviewers were told about the earlier findings and how the builder answered them, so they checked that the fixes hold rather than starting over.
+Codex approved in 31 seconds, Grok in about 9 minutes ([08-review-pass2-codex.json](08-review-pass2-codex.json), [08-review-pass2-grok.json](08-review-pass2-grok.json)). Both reviewers were told about the earlier findings and how the builder answered them, so they checked that the fixes hold rather than starting over.
 
 ## 7. SHIP
 
-The report ([09-ship-report.md](09-ship-report.md)) records the result, the reviewers (`codex 2/2 passes, grok 2/2 passes`), the first pass outcome, the breaker, every finding and how it was closed, the **Evidence** (what crossfire ran itself, which tests the builder named, what nobody verified: CI's job), the files changed and the timeline. The fix itself is [10-the-fix.diff](10-the-fix.diff).
+The report ([09-ship-report.md](09-ship-report.md)) records the result, the reviewers (`codex 2/2 passes, grok 2/2 passes`), the first pass outcome, the breaker, every finding and how it was closed, the **Evidence** (what crossfire ran itself, which tests the builder named, what nobody verified: CI's job), the files changed and the timeline, with each fix's `file:line` next to its finding. The fix itself is [10-the-fix.diff](10-the-fix.diff).
 
-Total: 15 minutes, 2 builder legs (the PR author's and one fix), 2 review passes.
+Total: 12 minutes from `init` to SHIP (the check before it took a few more): one crossfire builder leg, one breaker pass, 2 review passes.
 
 **SHIP is not done.** Next, a person pushes the branch, opens or updates the PR, waits for CI, merges, and verifies it where it runs. See [docs/workflow.md](../workflow.md).
-
-## A note on the timeline
-
-The timeline shows one `malformed` line: this run used a pre-release of 1.1.0 whose referee accepted only single lines in `where` and refused the builder's `src/serve.mjs:15-20`. That is how the bug was found; 1.1.0 accepts line ranges. The report's Breaker line was re-rendered from this run's saved state with the 1.1.0 wording. Running crossfire on real work keeps finding problems in crossfire itself, which is the point.
 
 ## What an escalation looks like
 

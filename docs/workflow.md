@@ -8,7 +8,7 @@ Give every change its own slug, branch and worktree (`superpowers:using-git-work
 
 ## SHIP is not done
 
-SHIP means the branch passed crossfire's proof commands, the breaker and the cross-vendor review, locally. A change is done further up the ladder:
+SHIP means the loop passed the gates it was configured with, locally: the proof commands, Codex's review, and Grok's and the breaker's when they ran (Grok is optional and a loop continues on Codex alone if it fails; the breaker can be off or skipped; after a nit pass, G7 ships the nit fixes without another review). Read the report's `REVIEWERS:` line and Evidence section before saying which checks passed. A change is done further up the ladder:
 
 1. **SHIP**: crossfire's loop passed.
 2. **Pushed**: the branch is on the remote (a person pushes; crossfire never does).
@@ -44,7 +44,7 @@ If the change touches something people operate, the spec names the runbook or do
 
 ## Worktree hygiene
 
-- Loop state lives in each worktree's `.crossfire/` (git ignores it); the repository's memory lives once, in `.git/crossfire/memory.md`, shared by all worktrees.
+- Loop state lives in each worktree's `.crossfire/` (git ignores it); the repository's memory lives once, in `<git common dir>/crossfire/memory.md` (`git rev-parse --git-common-dir`), shared by all worktrees. In a linked worktree `.git` is a file pointing elsewhere, so the memory is not under that worktree; `crossfire memory` prints it from anywhere.
 - `git worktree list` shows them; remove a finished one with `git worktree remove <path>`, and `git worktree prune` cleans up after ones deleted by hand.
 - One loop per worktree at a time; several loops at once need several worktrees.
 

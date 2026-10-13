@@ -16,8 +16,8 @@ Inside a crossfire round, depth beats brevity. Any instruction elsewhere to keep
 
 ## What reviewers found in this repository before
 Earlier loops and reviews here found these kinds of problems. Check whether this change could have any of them, and test for the ones that apply:
-- 2026-10-13 · BLOCKER · src/serve.mjs · Decoded traversal escapes the public directory (codex+grok, reported in check pr-1)
-- 2026-10-13 · CHANGES · src/serve.mjs · Malformed percent-encoding throws out of the resolver (grok, reported in check pr-1)
+- 2026-10-13 · BLOCKER · src/serve.mjs · Decoded parent segments escape the public directory (codex+grok, reported in check pr-1)
+- 2026-10-13 · BLOCKER · src/serve.mjs · decodeURIComponent throws on bad percent-encoding (grok, reported in check pr-1)
 
 ## Rules for every round
 - Work only in this repository and branch. Never push, merge, rebase onto another branch, or force-push.
@@ -42,17 +42,17 @@ Each one is evidence of a rule being broken, not a list of lines to patch. For e
 Answer every finding in `fixes`: FIXED (with `where`, the file:line of your fix, plus `rule` and `variants`), or DISPUTED with your reason (that stops the loop and goes to the owner). WONTFIX is only allowed for NIT.
 
 ### F1 · BLOCKER · src/serve.mjs:8-9 · from codex + grok
-**Decoded traversal escapes the public directory**
+**Decoded parent segments escape the public directory**
 
-path.join normalizes attacker-controlled '..' segments without enforcing containment. Verified: resolvePublic('/srv/site', '/../secret.txt') returns '/srv/site/secret.txt'; encoded traversal also escapes after decoding. If the returned path is served as intended, requests can expose files outside public/, including application secrets.
+path.join normalizes decoded '..' segments without checking containment. Verified that resolvePublic('/srv/site', '/%2e%2e/%2e%2e/etc/passwd') returns '/srv/etc/passwd'. If the server serves the returned path as intended, an attacker can read accessible files outside public/.
 
-Reviewer's recommendation: Resolve against an absolute public base and reject candidates whose path.relative(base, candidate) is '..', starts with '..' plus the platform separator, or is absolute. Add regression tests for literal and percent-encoded traversal.
-### F2 · CHANGES · src/serve.mjs:8 · from grok
-**Malformed percent-encoding throws out of the resolver**
+Reviewer's recommendation: Resolve the candidate against the absolute public directory, then reject it if path.relative(publicRoot, candidate) is '..', starts with '..' plus the platform separator, or is absolute. Add regression tests for plain and percent-encoded traversal.
+### F2 · BLOCKER · src/serve.mjs:8 · from grok
+**decodeURIComponent throws on bad percent-encoding**
 
-decodeURIComponent(requestPath) throws URIError on truncated or invalid escapes such as % or %ZZ. The function does not catch that, and nothing in this change shows a caller that does. A single crafted request path therefore fails the request synchronously; if the HTTP handler does not catch it, Node treats it as an uncaught exception and can take down the process. That is attacker-controlled input on the path this function is meant to map.
+decodeURIComponent(requestPath) throws URIError on malformed sequences such as "%" or "%ZZ". Nothing in this function catches that. If the HTTP handler calls resolvePublic on the raw URL path, one bad request becomes an unhandled exception instead of a 400. That is a crash or 500 path on ordinary client input, and it happens before any containment check could run.
 
-Reviewer's recommendation: Catch URIError and treat it as a bad request (reject the path, do not throw). Add a test that resolvePublic("%") does not throw and does not return a usable path.
+Reviewer's recommendation: Catch URIError and reject the request as invalid. Do not join a path that failed to decode.
 
 ## Your result
 When you are done, write this JSON to `<repo>/.crossfire/runs/fix-traversal/build-r2-fix.json` (exactly this shape; `fixes` must answer F1, F2):
@@ -74,7 +74,7 @@ When you are done, write this JSON to `<repo>/.crossfire/runs/fix-traversal/buil
       "id": "F1",
       "status": "FIXED",
       "note": "what you changed",
-      "where": "path/to/file.ext:120 (file:line of the fix; several separated by commas)",
+      "where": "lib/app.rb:120, spec/app_spec.rb:40-52",
       "rule": "the broadest rule that still holds, e.g. 'a post-commit decision reads committed state, never the in-memory object'",
       "variants": [
         {
@@ -95,7 +95,7 @@ When you are done, write this JSON to `<repo>/.crossfire/runs/fix-traversal/buil
       "id": "F2",
       "status": "FIXED",
       "note": "what you changed",
-      "where": "path/to/file.ext:120 (file:line of the fix; several separated by commas)",
+      "where": "lib/app.rb:120, spec/app_spec.rb:40-52",
       "rule": "the broadest rule that still holds, e.g. 'a post-commit decision reads committed state, never the in-memory object'",
       "variants": [
         {

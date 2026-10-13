@@ -2,21 +2,21 @@
 
 - Result: 2 finding(s)
 - Branch: `feature/resolve-public` at `7b9c285825a1`, reviewed against `main` (`3ebb6a717bfd`)
-- Reviewers: codex 1/1 passes, grok 1/1 passes
-- When: 2026-10-13T12:22:20.262Z
+- Reviewers: codex 1/1 passes (last verdict: needs-attention), grok 1/1 passes (last verdict: needs-attention)
+- When: 2026-10-13T14:34:58.738Z
 
 ## Findings
 
 ### 1. BLOCKER · src/serve.mjs:8 · codex + grok
-**Decoded traversal escapes the public directory**
+**Decoded parent segments escape the public directory**
 
-path.join normalizes attacker-controlled '..' segments without enforcing containment. Verified: resolvePublic('/srv/site', '/../secret.txt') returns '/srv/site/secret.txt'; encoded traversal also escapes after decoding. If the returned path is served as intended, requests can expose files outside public/, including application secrets.
+path.join normalizes decoded '..' segments without checking containment. Verified that resolvePublic('/srv/site', '/%2e%2e/%2e%2e/etc/passwd') returns '/srv/etc/passwd'. If the server serves the returned path as intended, an attacker can read accessible files outside public/.
 
-Recommendation: Resolve against an absolute public base and reject candidates whose path.relative(base, candidate) is '..', starts with '..' plus the platform separator, or is absolute. Add regression tests for literal and percent-encoded traversal.
+Recommendation: Resolve the candidate against the absolute public directory, then reject it if path.relative(publicRoot, candidate) is '..', starts with '..' plus the platform separator, or is absolute. Add regression tests for plain and percent-encoded traversal.
 
-### 2. CHANGES · src/serve.mjs:8 · grok
-**Malformed percent-encoding throws out of the resolver**
+### 2. BLOCKER · src/serve.mjs:8 · grok
+**decodeURIComponent throws on bad percent-encoding**
 
-decodeURIComponent(requestPath) throws URIError on truncated or invalid escapes such as % or %ZZ. The function does not catch that, and nothing in this change shows a caller that does. A single crafted request path therefore fails the request synchronously; if the HTTP handler does not catch it, Node treats it as an uncaught exception and can take down the process. That is attacker-controlled input on the path this function is meant to map.
+decodeURIComponent(requestPath) throws URIError on malformed sequences such as "%" or "%ZZ". Nothing in this function catches that. If the HTTP handler calls resolvePublic on the raw URL path, one bad request becomes an unhandled exception instead of a 400. That is a crash or 500 path on ordinary client input, and it happens before any containment check could run.
 
-Recommendation: Catch URIError and treat it as a bad request (reject the path, do not throw). Add a test that resolvePublic("%") does not throw and does not return a usable path.
+Recommendation: Catch URIError and reject the request as invalid. Do not join a path that failed to decode.

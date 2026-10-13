@@ -1,8 +1,10 @@
 {
   "reviewer": "codex",
+  "required": true,
+  "seconds": 31,
   "ok": true,
-  "seconds": 41,
   "verdict": "approve",
-  "summary": "No supported ship-blocking findings. F1 and F2 are resolved; npm test passes, and 5,832 adversarial path probes preserved containment without exceptions.",
-  "findings": []
+  "summary": "No substantive finding supported by the diff. F1 and F2 are resolved; adversarial path probes remained contained or returned null, and npm test passed.",
+  "findings": [],
+  "nextSteps": []
 }

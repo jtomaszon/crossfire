@@ -46,7 +46,7 @@ Crossfire itself has no telemetry. The tools it drives send data under their own
 - **Anthropic (Claude Code):** the orchestrator, the builder and the breaker are ordinary Claude Code sessions; they read the spec, the plan, the briefs and the repository's memory, and `crossfire watch` prints PR comment bodies in full into the session.
 - **GitHub:** `crossfire watch` and `/crossfire:review` read the PR's state, comments and reviews through `gh`.
 
-Kept out of git (through `.git/info/exclude`) and stored only on your machine: `.crossfire/` (specs, plans, loop runs, checks, the watcher's inbox), `.git/crossfire/memory.md`, and `~/.local/state/crossfire/reviewers.json` (one-line reviewer errors). "Out of git" is not "never sent": parts of these reach the tools above as described. See [SECURITY.md](SECURITY.md).
+Kept out of git (through `.git/info/exclude`) and stored only on your machine: `.crossfire/` (specs, plans, loop runs, checks, the watcher's inbox), `.git/crossfire/memory.md` (in the git common directory, shared by every worktree), and `~/.local/state/crossfire/reviewers.json` (one-line reviewer errors). "Out of git" is not "never sent": parts of these reach the tools above as described. See [SECURITY.md](SECURITY.md).
 
 ### What crossfire will never do
 

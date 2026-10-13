@@ -1,8 +1,10 @@
 {
   "reviewer": "grok",
+  "required": false,
+  "seconds": 554,
   "ok": true,
-  "seconds": 617,
   "verdict": "approve",
-  "summary": "Ship. resolvePublic decodes once, turns malformed escapes into null, and the path.relative jail blocks lexical escapes (encoded .., sibling prefixes, the public directory itself, NUL, and backslash). F1 and F2 are fixed; this diff does not leave a spec or containment hole.",
-  "findings": []
+  "summary": "Ship. resolvePublic decodes once, rejects a bad escape, NUL, or backslash, and path.relative keeps every accepted path inside <root>/public. F1 and F2 stay fixed; the spec cases neither escape nor throw.",
+  "findings": [],
+  "nextSteps": []
 }

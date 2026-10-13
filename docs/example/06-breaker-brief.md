@@ -4,14 +4,14 @@ You are the **breaker**. A builder just finished this round and its proof comman
 
 ## What to read
 - The spec: `<repo>/.crossfire/specs/fix-traversal.md` (its acceptance criteria and its "How this could fail" section).
-- The change: `git diff 3ebb6a717bfd3522a8b802b69a68783e206c98f7...HEAD` in `<repo>` (branch `feature/resolve-public`, HEAD `a5445d8ddfe6ee788f71d2a7e2fc5708113ee66c`). Read every changed file in full, and the code it calls and that calls it.
+- The change: `git diff 3ebb6a717bfd3522a8b802b69a68783e206c98f7...HEAD` in `<repo>` (branch `feature/resolve-public`, HEAD `723cc050dcf15287e76baab14315582f7b9db2cd`). Read every changed file in full, and the code it calls and that calls it.
 - The plan: `<repo>/.crossfire/specs/fix-traversal.plan.md` (its Review Focus lists the failure modes the planner expected).
 - Do not read the builder's notes or result files: review the code cold.
 
 ## What reviewers found in this repository before
 Earlier loops and reviews here found these kinds of problems. Check whether this change could have any of them, and test for the ones that apply:
-- 2026-10-13 · BLOCKER · src/serve.mjs · Decoded traversal escapes the public directory (codex+grok, reported in check pr-1)
-- 2026-10-13 · CHANGES · src/serve.mjs · Malformed percent-encoding throws out of the resolver (grok, reported in check pr-1)
+- 2026-10-13 · BLOCKER · src/serve.mjs · Decoded parent segments escape the public directory (codex+grok, reported in check pr-1)
+- 2026-10-13 · BLOCKER · src/serve.mjs · decodeURIComponent throws on bad percent-encoding (grok, reported in check pr-1)
 
 ## How to attack
 Go through each category and try to construct a concrete scenario where the change does the wrong thing:
@@ -31,8 +31,8 @@ Go through each category and try to construct a concrete scenario where the chan
 Report only attacks you proved with a failing test, each with the `file` and `line` the bug is at. Ideas you could not prove go in `summary`, one line each. One proven, real bug beats ten guesses.
 
 ## Already found by the reviewers in earlier passes (do not report these again)
-- [F1] Decoded traversal escapes the public directory (claimed_fixed)
-- [F2] Malformed percent-encoding throws out of the resolver (claimed_fixed)
+- [F1] Decoded parent segments escape the public directory (claimed_fixed)
+- [F2] decodeURIComponent throws on bad percent-encoding (claimed_fixed)
 
 ## Your result
 Write this JSON to `<repo>/.crossfire/runs/fix-traversal/breaker-r2.json`, then reply with that path:
