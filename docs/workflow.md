@@ -8,7 +8,7 @@ Give every change its own slug, branch and worktree (`superpowers:using-git-work
 
 ## SHIP is not done
 
-SHIP means the loop passed the gates it was configured with, locally: the proof commands, Codex's review, and Grok's and the breaker's when they ran (Grok is optional and a loop continues on Codex alone if it fails; the breaker can be off or skipped; after a nit pass, G7 ships the nit fixes without another review). Read the report's `REVIEWERS:` line and Evidence section before saying which checks passed. A change is done further up the ladder:
+SHIP means the loop passed the gates it was configured with, locally: the proof commands, Codex's review, and Grok's and the breaker's when they ran (Grok is optional and a loop continues on Codex alone if it fails; the breaker can be off or skipped; after a nit pass, G7 ships the nit fixes without another review). Before saying which checks passed, read the report's Reviewers line (which reviewer ran each pass), its Evidence section, and its timeline: a breaker that was skipped or failed shows only there, as `breaker-skipped` or `breaker-failed`, while the Breaker line still counts that round as a pass with 0 attacks. A change is done further up the ladder:
 
 1. **SHIP**: crossfire's loop passed.
 2. **Pushed**: the branch is on the remote (a person pushes; crossfire never does).
@@ -32,7 +32,7 @@ Proof commands (`--e2e`, `--invariant`) run only what the change touches: the sp
 deliberately not changed>
 ```
 
-The builder commits every round this way. A reviewer reading `git log` six months later should understand the change without the loop's files.
+This is a habit for the people who squash or edit the loop's commits before the PR; crossfire does not give the builder this template or check its messages, so a builder's commit message is whatever it wrote. A reviewer reading `git log` six months later should understand the change without the loop's files.
 
 ## Every spec says how to undo it
 

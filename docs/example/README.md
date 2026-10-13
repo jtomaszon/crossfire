@@ -70,14 +70,14 @@ Total: 12 minutes from `init` to SHIP (the check before it took a few more): one
 
 ## What an escalation looks like
 
-Not part of this run. When a gate stops the loop, the last command prints, for example:
+Not part of this run. When a gate stops the loop, the last command prints lines of this shape (an illustration, not captured output):
 
 ```
 NEXT ACTION: ESCALATE
-REVIEWERS: codex 2/2 passes, grok 1/2 passes (failed: ...)
+REVIEWERS: codex 2/2 passes (last verdict: needs-attention), grok 1/2 passes (failed: ...)
 GATE: G3
 REASON: G3: F1 re-flagged after the builder answered it (claimed_fixed): <the finding>
-REPORT: .crossfire/runs/<slug>/report.md
+REPORT: <repo>/.crossfire/runs/<slug>/report.md
 ```
 
 The report's "What the owner needs to decide" section lists the gate, the open findings and the options: accept as is, give the builder a direction and start a new loop on top of the branch, or drop the change. Crossfire never loops past an escalation.
