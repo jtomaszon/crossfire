@@ -1,6 +1,6 @@
 # A complete crossfire run, start to SHIP
 
-Every file in this folder is real output from one run of crossfire 1.1.0, on a tiny synthetic repository (`tiny-static`), with local paths replaced by `<repo>`. It shows the most common path: someone opens a pull request, crossfire reviews it, finds problems, and a loop fixes them until both reviewers approve.
+Every file in this folder is real output from one run of crossfire 1.1.0, on a tiny synthetic repository (`tiny-static`, included here: see [Reproduce it](#reproduce-it)), with local paths replaced by `<repo>`. It shows the most common path: someone opens a pull request, crossfire reviews it, finds problems, and a loop fixes them until both reviewers approve.
 
 Times are wall-clock on a Linux host with Codex and Grok Build both usable.
 
@@ -16,6 +16,24 @@ export function resolvePublic(root, requestPath) {
 ```
 
 Its own test (serving `/index.html`) passes. It has two bugs: `/../secret.txt` resolves outside `public/`, and a malformed escape such as `%` throws.
+
+## Reproduce it
+
+[tiny-static/](tiny-static/) is the run's `main`, byte for byte, and [00-the-pr.diff](00-the-pr.diff) is the pull request (rebuilt from the function above and the fix diff; the run's PR commit was not kept). From the root of a crossfire checkout:
+
+```bash
+EX="$PWD/docs/example"
+cp -R "$EX/tiny-static" /tmp/tiny-static && cd /tmp/tiny-static
+git init -q -b main && git add -A && git commit -qm "skeleton"
+git switch -qc feature/resolve-public && git apply "$EX/00-the-pr.diff" && git commit -qam "serve: resolvePublic"
+npm test                                 # 2 tests pass; neither bug is tested
+echo "/.crossfire/" >> .git/info/exclude # crossfire adds this itself on first use
+mkdir -p .crossfire/specs                # the spec and plan of step 2, with <repo> filled in
+sed "s|<repo>|$PWD|g" "$EX/02-spec.md" > .crossfire/specs/fix-traversal.md
+sed "s|<repo>|$PWD|g" "$EX/03-plan.md" > .crossfire/specs/fix-traversal.plan.md
+```
+
+Then, in that directory, in a Claude Code session where `/crossfire:setup` says **READY**, run step 1's command and step 3's (with `--spec .crossfire/specs/fix-traversal.md --plan .crossfire/specs/fix-traversal.plan.md`), and let the session follow each `NEXT ACTION` through steps 4 to 7. The builder and the reviewers are models: expect the same two bugs, not the same words, line numbers or times. Reports from crossfire 1.2 and later also count breaker legs completed, skipped and failed. To see only the fix, on `main`: `git apply "$EX/10-the-fix.diff" && npm test` (18 tests).
 
 ## 1. Review the PR: `crossfire check` (no builder, no loop)
 
