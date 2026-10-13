@@ -77,7 +77,7 @@ export function renderReport(state, { minutesElapsed, changedFiles = [], head = 
   const answered = (a) => breakerItems.filter((e) => lastAnswer(e) === a).length;
   const unanswered = breakerItems.filter((e) => !lastAnswer(e)).length;
   // Each answer on its own: reviewed when a review pass ran after it (closed, or held at a finding's place).
-  const reviewedAnswer = (e) => e.status === "closed" || (e.reflaggedPass != null && e.reflaggedPass > (e.claimedPass ?? -1));
+  const reviewedAnswer = (e) => e.status === "closed" || (e.reflaggedPass != null && e.reflaggedPass > (e.answeredPass ?? e.claimedPass ?? -1));
   const withAnswer = breakerItems.filter((e) => lastAnswer(e));
   const reviewedN = withAnswer.filter(reviewedAnswer).length;
   const reviewerFailures = (state.reviewerRuns ?? []).filter((r) => !r.ok);
@@ -96,13 +96,14 @@ export function renderReport(state, { minutesElapsed, changedFiles = [], head = 
   if (!shipped) {
     const ids = (list) => list.map((e) => `${e.id} (${e.severity})`).join(", ");
     const open = [...openAboveNit(state), ...openNits(state)];
-    const claimed = state.ledger.filter((e) => e.status === "claimed_fixed" && e.severity !== "NIT");
-    // Loops started before 1.1.0 have no claimedPass: treat their claims as not re-reviewed.
-    const reflagged = claimed.filter((e) => e.reflaggedPass != null && e.claimedPass != null && e.reflaggedPass > e.claimedPass);
-    const unreviewed = claimed.filter((e) => !reflagged.includes(e));
+    // Re-flagged in this pass, whatever the status (a closed finding a reviewer re-opened is open again).
+    const reflagged = state.ledger.filter((e) => e.reflaggedPass != null && e.reflaggedPass === state.reviewPass && e.reflaggedPass > (e.answeredPass ?? e.claimedPass ?? -1));
+    // Loops started before 1.1.0 have no answeredPass: their claims count as not re-reviewed.
+    const unreviewed = state.ledger.filter((e) => e.status === "claimed_fixed" && e.severity !== "NIT" && !reflagged.includes(e));
+    const openNow = open.filter((e) => !reflagged.includes(e));
     const disputed = state.ledger.filter((e) => e.status === "disputed_internal" || e.status === "disputed");
     const groups = [
-      [open, "Still open"],
+      [openNow, "Still open"],
       [reflagged, "Claimed fixed, then re-flagged (or flagged at the same place) by a reviewer"],
       [unreviewed, "Claimed fixed by the builder, not re-reviewed"],
       [disputed, "Disputed by the builder, not settled by a reviewer"],
@@ -111,7 +112,11 @@ export function renderReport(state, { minutesElapsed, changedFiles = [], head = 
       "",
       "## What the owner needs to decide",
       `- Gate ${t.gate}: ${t.reason}`,
-      ...(groups.length ? groups.map(([list, label]) => `- ${label}: ${ids(list)}`) : ["- Nothing else is open."]),
+      ...(groups.length ? groups.map(([list, label]) => `- ${label}: ${ids(list)}`) : [/^G[34]$/.test(t.gate ?? "") ? "- See the gate above: a reviewer re-flagged a finding." : "- Nothing else is open."]),
+      ...reflagged.flatMap((e) => {
+        const h = [...e.history].reverse().find((x) => x.reflagged);
+        return h ? [`  - ${e.id} re-flagged as: ${h.reflagged}${h.body ? `: ${h.body.split("\n")[0].slice(0, 300)}` : ""}`] : [];
+      }),
       "- Options: accept as is, give the builder a direction and start a new loop on top of this branch, or drop the change.",
     );
   }

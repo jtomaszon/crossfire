@@ -154,12 +154,13 @@ export function afterBuild(state, result, g0, { at, minutesElapsed }) {
   for (const fix of result.fixes ?? []) {
     const entry = state.ledger.find((e) => e.id === fix.id);
     if (!entry) continue;
+    entry.answeredPass = state.reviewPass;
+    delete entry.reflaggedPass;
     entry.history.push({ at, round: state.round, builder: fix.status, note: fix.note ?? "", ...(fix.rule ? { rule: String(fix.rule).slice(0, 300) } : {}), ...(fix.where ? { where: String(fix.where).trim().slice(0, 300) } : {}) });
     if (fix.status === "FIXED") {
       entry.status = "claimed_fixed";
       entry.claimedRound = state.round;
       entry.claimedPass = state.reviewPass;
-      delete entry.reflaggedPass;
     } else if (entry.severity === SEVERITY.NIT) {
       entry.status = "wontfix";
     } else if (entry.source === "breaker") {
@@ -258,7 +259,7 @@ export function compareWithPrevious(previous, current) {
   const tagged = new Set();
   const near = new Set();
   for (const f of current) {
-    const close = previous.flatMap((p, j) => (overlaps(p, f) ? [j] : []));
+    const close = previous.flatMap((p, j) => (sameplace(p, f) ? [j] : []));
     const idx = [...new Set(titlesOf(f).map((t) => /^\s*\[P(\d+)\]/.exec(t)?.[1]).filter(Boolean).map((n) => Number(n) - 1))].filter((i) => i >= 0 && i < previous.length);
     if (idx.length) {
       for (const i of idx) {
@@ -283,6 +284,11 @@ const TAG_RE = /\[(F\d+)\]/;
 function titlesOf(f) {
   return [f.title, ...(f.alsoTitles ?? [])].filter((t) => typeof t === "string");
 }
+
+/** Does a ledger entry or earlier finding sit at any place a (merged) finding was reported? */
+function sameplace(e, f) {
+  return [f, ...(f.alsoAt ?? [])].some((place) => overlaps(e, place));
+}
 const LINE_SLACK = 3;
 
 function overlaps(a, b) {
@@ -304,6 +310,7 @@ export function mergeFindings(reviews) {
       if (twin) {
         twin.reviewers.push(review.reviewer);
         if (f.title && f.title !== twin.title) (twin.alsoTitles ??= []).push(f.title);
+        (twin.alsoAt ??= []).push({ file: f.file, lineStart: f.lineStart, lineEnd: f.lineEnd });
         continue;
       }
       merged.push({ ...f, reviewers: [review.reviewer] });
@@ -348,7 +355,7 @@ export function afterReview(state, reviews, { at, minutesElapsed }) {
 
   for (const f of findings) {
     // A claimed fix or a dispute at the place of any finding is not accepted this pass.
-    const atPlace = state.ledger.filter((e) => (e.status === "claimed_fixed" || e.status === "disputed_internal") && overlaps(e, f));
+    const atPlace = state.ledger.filter((e) => (e.status === "claimed_fixed" || e.status === "disputed_internal") && sameplace(e, f));
     for (const e of atPlace) reflagged.add(e.id);
     const tags = [...new Set(titlesOf(f).map((t) => TAG_RE.exec(t)?.[1]).filter(Boolean))];
     const taggedEntries = tags.map((id) => state.ledger.find((e) => e.id === id)).filter(Boolean);
@@ -356,7 +363,10 @@ export function afterReview(state, reviews, { at, minutesElapsed }) {
       for (const tagged of taggedEntries) {
         reflagged.add(tagged.id);
         if (tagged.status === "wontfix" && f.severity === SEVERITY.NIT) continue;
-        escalations.push(["G3", `${tagged.id} re-flagged after the builder answered it (${tagged.status}): ${tagged.title}`]);
+        tagged.history.push({ at, pass: state.reviewPass, reflagged: f.title, body: String(f.body ?? "").slice(0, 2000), where: f.file ? `${f.file}:${f.lineStart ?? ""}` : undefined, reviewers: f.reviewers });
+        const was = tagged.status;
+        if (was === "closed") tagged.status = "open"; // a reviewer says it is not resolved
+        escalations.push(["G3", `${tagged.id} re-flagged after the builder answered it (${was}): ${f.title}`]);
       }
       continue;
     }

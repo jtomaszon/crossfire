@@ -295,3 +295,14 @@ test("the builder result example in the brief passes the where check", () => {
   const example = /where: "([^"]+)"/.exec(src)[1];
   assert.ok(validWhere(example), example);
 });
+
+test("re-check: a merged finding is near every earlier finding at any reviewer's location", () => {
+  const prev = [
+    { severity: "BLOCKER", title: "a", file: "a.js", lineStart: 10, lineEnd: 10 },
+    { severity: "BLOCKER", title: "b", file: "a.js", lineStart: 16, lineEnd: 16 },
+  ];
+  const merged = { severity: "BLOCKER", title: "[P1] a again", alsoTitles: ["near b"], alsoAt: [{ file: "a.js", lineStart: 13, lineEnd: 13 }], file: "a.js", lineStart: 10, lineEnd: 10 };
+  const d = compareWithPrevious(prev, [merged]);
+  assert.deepEqual(d.unclear.map((p) => p.index), [2]);
+  assert.deepEqual(d.resolved, []);
+});

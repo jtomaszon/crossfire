@@ -26,6 +26,7 @@ From crossfire's review of this release (Codex + Grok):
 - `where` must use lines from 1 with ranges in order, is kept on the finding, shown to the reviewers next pass ("FIXED at a.js:10") and in the report's findings table.
 - An odd `variants` value on a DISPUTED answer no longer crashes `built`.
 - Second review: when two reviewers report the same place, every reviewer's tag counts (a merged finding kept only one title). A finding at the place of several claimed fixes keeps all of them open (only one was, the rest were closed as accepted), and on a re-check a tagged re-flag keeps its neighbours unclear. Breaker answers are counted as reviewed or not one by one. Claimed fixes in loops started before 1.1.0 are listed as not re-reviewed. The builder brief's `where` example passes the `where` check.
+- Third review: a finding a reviewer re-flags after it was closed is reopened, and the reviewer's new title and text reach the escalation report (the report said "Nothing else is open"). A merged finding counts at every reviewer's location. A builder answer changed after a review is not counted as reviewed.
 
 ## 1.0.1
 
