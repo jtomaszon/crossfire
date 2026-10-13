@@ -173,7 +173,7 @@ test("re-check delta: only tagged re-flags are still open; an untagged finding n
   assert.deepEqual(d.stillOpen.map((x) => [x.previous.index, x.how]), [[1, "re-flagged"]]);
   assert.deepEqual(d.unclear.map((p) => p.index), [2], "not guessed fixed, not guessed open");
   assert.deepEqual(d.resolved.map((p) => p.index), [3]);
-  assert.deepEqual(d.fresh.map((f) => [f.title, f.nearPrevious ?? null]), [["index on the wrong column", 2], ["new: deadlock", null]]);
+  assert.deepEqual(d.fresh.map((f) => [f.title, f.nearPrevious ?? null]), [["index on the wrong column", [2]], ["new: deadlock", null]]);
 });
 
 test("a reviewer that could not review (needs-attention, nothing itemised) is a failed review, not a finding", () => {
@@ -251,4 +251,28 @@ test("REVIEWERS says the last verdict when it was not an approval, so 1/1 passes
   const line = reviewersLine({ reviewPass: 1, reviewerRuns: [{ pass: 1, reviewer: "codex", ok: true, verdict: "needs-attention" }] });
   assert.equal(line, "codex 1/1 passes (last verdict: needs-attention)");
   assert.equal(reviewersLine({ reviewPass: 1, reviewerRuns: [{ pass: 1, reviewer: "codex", ok: true, verdict: "approve" }] }), "codex 1/1 passes");
+});
+
+test("re-check delta: every earlier finding near an untagged one is unclear, at any severity; tags count only at the start", () => {
+  const prev = [
+    { severity: "BLOCKER", title: "race on write", file: "app.js", lineStart: 10, lineEnd: 10 },
+    { severity: "CHANGES", title: "missing check", file: "app.js", lineStart: 12, lineEnd: 12 },
+    { severity: "BLOCKER", title: "far away", file: "other.js", lineStart: 50, lineEnd: 50 },
+  ];
+  const now = [
+    { severity: "CHANGES", title: "partial fix still racy", file: "app.js", lineStart: 11, lineEnd: 11 },
+    { severity: "NIT", title: "see [P3] for context", file: "z.js", lineStart: 1, lineEnd: 1 },
+  ];
+  const d = compareWithPrevious(prev, now);
+  assert.deepEqual(d.unclear.map((p) => p.index), [1, 2]);
+  assert.deepEqual(d.resolved.map((p) => p.index), [3], "an unanchored [P3] does not re-flag P3");
+  assert.deepEqual(d.stillOpen, []);
+  assert.deepEqual(d.fresh.map((f) => [f.title, f.nearPrevious ?? null]), [["partial fix still racy", [1, 2]], ["see [P3] for context", null]]);
+});
+
+import { validWhere } from "../plugins/crossfire/scripts/lib/briefs.mjs";
+
+test("where: lines start at 1 and ranges run forward", () => {
+  for (const ok of ["a.js:1", "src/x.mjs:15-20", "a.js:3, b.js:9-9"]) assert.ok(validWhere(ok), ok);
+  for (const bad of ["a.js:0", "a.js:20-1", "a.js:0-3", "somewhere", "", "a.js:5, b.js:0"]) assert.ok(!validWhere(bad), bad);
 });

@@ -154,10 +154,12 @@ export function afterBuild(state, result, g0, { at, minutesElapsed }) {
   for (const fix of result.fixes ?? []) {
     const entry = state.ledger.find((e) => e.id === fix.id);
     if (!entry) continue;
-    entry.history.push({ at, round: state.round, builder: fix.status, note: fix.note ?? "", ...(fix.rule ? { rule: String(fix.rule).slice(0, 300) } : {}) });
+    entry.history.push({ at, round: state.round, builder: fix.status, note: fix.note ?? "", ...(fix.rule ? { rule: String(fix.rule).slice(0, 300) } : {}), ...(fix.where ? { where: String(fix.where).trim().slice(0, 300) } : {}) });
     if (fix.status === "FIXED") {
       entry.status = "claimed_fixed";
       entry.claimedRound = state.round;
+      entry.claimedPass = state.reviewPass;
+      delete entry.reflaggedPass;
     } else if (entry.severity === SEVERITY.NIT) {
       entry.status = "wontfix";
     } else if (entry.source === "breaker") {
@@ -244,7 +246,9 @@ export function afterBreak(state, attacks, { at, minutesElapsed }) {
 /**
  * Compare a re-check with an earlier check of the same PR. Earlier findings are
  * tagged P1..Pn in the reviewers' focus; a reviewer that still sees one reports it
- * again with its tag. Untagged findings at the same place also count as still open.
+ * again, its title starting with the tag. Only that counts as still open. An untagged
+ * finding near earlier ones (any severity) is new, "near Pn", and every earlier finding
+ * it is near is unclear. Fixed means re-flagged by nobody and near nothing.
  */
 export function compareWithPrevious(previous, current) {
   // Still open needs the reviewer's own tag ([Pn]). A new finding near an earlier one is
@@ -254,16 +258,16 @@ export function compareWithPrevious(previous, current) {
   const tagged = new Set();
   const near = new Set();
   for (const f of current) {
-    const tag = /\[P(\d+)\]/.exec(f.title ?? "")?.[1];
+    const tag = /^\s*\[P(\d+)\]/.exec(f.title ?? "")?.[1];
     const i = tag ? Number(tag) - 1 : -1;
     if (i >= 0 && i < previous.length) {
       if (!tagged.has(i)) stillOpen.push({ previous: { index: i + 1, ...previous[i] }, now: f, how: "re-flagged" });
       tagged.add(i);
       continue;
     }
-    const j = previous.findIndex((p) => p.severity === f.severity && overlaps(p, f));
-    if (j >= 0) near.add(j);
-    fresh.push(j >= 0 ? { ...f, nearPrevious: j + 1 } : f);
+    const close = previous.flatMap((p, j) => (overlaps(p, f) ? [j] : []));
+    for (const j of close) near.add(j);
+    fresh.push(close.length ? { ...f, nearPrevious: close.map((j) => j + 1) } : f);
   }
   const indexed = previous.map((p, i) => ({ index: i + 1, ...p }));
   const unclear = indexed.filter((p) => !tagged.has(p.index - 1) && near.has(p.index - 1));
@@ -347,6 +351,7 @@ export function afterReview(state, reviews, { at, minutesElapsed }) {
     if (suspect) {
       reflagged.add(suspect.id);
       escalations.push(["G4", `new ${f.severity} at ${f.file}:${f.lineStart} overlaps ${suspect.id}, claimed fixed: ${f.title}`]);
+      fresh.push(f); // recorded as open, so the owner sees it
       continue;
     }
     fresh.push(f);
@@ -361,6 +366,7 @@ export function afterReview(state, reviews, { at, minutesElapsed }) {
       e.status = "closed";
       e.closedPass = state.reviewPass;
     }
+    if (reflagged.has(e.id)) e.reflaggedPass = state.reviewPass;
   }
 
   for (const f of fresh) {

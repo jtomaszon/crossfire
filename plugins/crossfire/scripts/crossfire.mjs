@@ -459,7 +459,7 @@ function built(ctx, opts) {
     }
     // Evidence for the report: what crossfire itself ran, and which tests the builder named.
     state.lastProof = { round: builtRound, at, commands: [...state.e2e, ...state.invariants].map((command) => ({ command, status: g0.failures.find((f) => f.command === command)?.status ?? 0 })) };
-    state.testsNamed = [...new Set([...(state.testsNamed ?? []), ...(result.tests ?? []).map((t) => t.name), ...(result.fixes ?? []).flatMap((f) => (f.variants ?? []).map((v) => v.test))].filter(Boolean))];
+    state.testsNamed = [...new Set([...(state.testsNamed ?? []), ...(Array.isArray(result.tests) ? result.tests : []).map((t) => t?.name), ...(Array.isArray(result.fixes) ? result.fixes : []).flatMap((f) => (Array.isArray(f?.variants) ? f.variants : []).map((v) => v?.test))].filter(Boolean))];
     afterBuild(state, result, g0, { at, minutesElapsed: minutesBetween(state.startedAt) });
     saveState(dir, state);
     const proofCount = state.e2e.length + state.invariants.length;
@@ -538,7 +538,7 @@ function check(ctx, opts) {
   let since = null;
   if (prev) {
     const d = compareWithPrevious(prev.findings, findings);
-    since = { id: prev.id, head: prev.head, resolved: d.resolved, stillOpen: d.stillOpen, unclear: d.unclear, fresh: d.fresh.length, near: d.fresh.filter((f) => f.nearPrevious).map((f) => ({ title: f.title, near: f.nearPrevious })) };
+    since = { id: prev.id, head: prev.head, resolved: d.resolved, stillOpen: d.stillOpen, unclear: d.unclear, fresh: d.fresh.length, near: d.fresh.filter((f) => f.nearPrevious).map((f) => ({ title: f.title, near: f.nearPrevious.map((n) => `P${n}`).join(", ") })) };
   }
   const record = { version: 1, id, at, repo, branch, head, base, baseSha, focus: opts.focus ?? prev?.focus ?? null, spec: opts.spec ? path.resolve(ctx.cwd, opts.spec) : null, reviewerRuns, reviewersText, reviews: ok, findings, approved: findings.length === 0, since };
   atomicWriteJson(path.join(dir, "check.json"), record);

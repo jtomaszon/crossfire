@@ -222,3 +222,30 @@ test("an escalation report lists findings the builder claimed fixed that no revi
   const report = renderReport(s, { minutesElapsed: 11 });
   assert.match(report, /Claimed fixed by the builder, not re-reviewed: F1 \(BLOCKER\)/);
 });
+
+test("G3 and G4 escalations: a re-flagged fix is reported as re-flagged, and the G4 finding is open", () => {
+  const s = fresh();
+  afterBuild(s, done(), green, t);
+  afterReview(s, [codex([f("BLOCKER", "hole", "a.js", 10), f("BLOCKER", "leak", "b.js", 40)])], t);
+  afterBuild(s, done([{ id: "F1", status: "FIXED", where: "a.js:10" }, { id: "F2", status: "FIXED", where: "b.js:40" }]), green, t);
+  const next = afterReview(s, [codex([f("BLOCKER", "[F1] still a hole", "a.js", 10), f("CHANGES", "leak on retry", "b.js", 41)])], t);
+  assert.ok(["G3", "G4"].includes(next.gate));
+  const report = renderReport(s, { minutesElapsed: 2 });
+  assert.match(report, /Claimed fixed, then re-flagged by a reviewer: F1 \(BLOCKER\), F2 \(BLOCKER\)/);
+  assert.doesNotMatch(report, /not re-reviewed/);
+  assert.match(report, /Still open: F3 \(CHANGES\)/);
+  assert.match(report, /a\.js:10 \(fix: a\.js:10\)/);
+});
+
+test("breaker evidence counts the builder's answers; a dispute on an early stop is shown to the owner", () => {
+  const s = fresh({ breaker: true, maxMinutes: 10 });
+  afterBuild(s, done(), green, t);
+  afterBreak(s, [attack("maybe a race"), attack("real hole", "b.js", 5)], t);
+  const next = afterBuild(s, done([{ id: "B1", status: "DISPUTED", note: "lock covers it" }, { id: "B2", status: "FIXED", where: "b.js:5" }]), green, { at, minutesElapsed: 11 });
+  assert.equal(next.gate, "G6");
+  const report = renderReport(s, { minutesElapsed: 11 });
+  assert.match(report, /the builder answered 1 FIXED and 1 DISPUTED; no review pass ran after the answers/);
+  assert.match(report, /Claimed fixed by the builder, not re-reviewed: B2 \(BLOCKER\)/);
+  assert.match(report, /Disputed by the builder, not settled by a reviewer: B1 \(BLOCKER\)/);
+  assert.doesNotMatch(report, /hardened/);
+});

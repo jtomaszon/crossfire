@@ -1042,3 +1042,18 @@ test("crossfire --version prints the version", () => {
   assert.equal(r.status, 0);
   assert.match(r.stdout, /^\d+\.\d+\.\d+\n$/);
 });
+
+test("a DISPUTED answer with odd variants does not crash built; the loop reaches its gate", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  let next = init(sb);
+  sb.build(next.resultFile);
+  sb.cf("built", "--slug", "demo");
+  sb.queue("codex", needs(finding("high", "x")));
+  sb.queue("grok", approve);
+  next = sb.cf("review", "--slug", "demo", "--json").json();
+  sb.build(next.resultFile, { fixes: [{ id: "F1", status: "DISPUTED", note: "not a bug", variants: "none" }] });
+  const r = sb.cf("built", "--slug", "demo");
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /GATE: G3/);
+});

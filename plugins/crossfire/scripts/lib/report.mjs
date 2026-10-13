@@ -29,7 +29,7 @@ export function renderCheckReport(check) {
       ...d.resolved.map((p) => `- Fixed: [P${p.index}] ${p.title}`),
       ...d.stillOpen.map((x) => `- Still open (${x.how}): [P${x.previous.index}] ${x.previous.title}`),
       ...(d.unclear ?? []).map((p) => `- Unclear: [P${p.index}] ${p.title} (a new finding is near it; read both)`),
-      ...(d.near ?? []).map((n) => `- New, near P${n.near}: ${n.title}`),
+      ...(d.near ?? []).map((n) => `- New, near ${String(n.near).startsWith("P") ? n.near : `P${n.near}`}: ${n.title}`),
     );
   }
   out.push("", "## Findings");
@@ -66,10 +66,16 @@ export function renderReport(state, { minutesElapsed, changedFiles = [], head = 
   if (!state.ledger.length) out.push("None.");
   else {
     out.push("| ID | Severity | Status | Where | Reviewers | Finding |", "|---|---|---|---|---|---|");
-    for (const e of state.ledger) out.push(`| ${e.id} | ${e.severity} | ${e.status} | ${loc(e)} | ${e.reviewers.join(" + ")} | ${e.title.replace(/\|/g, "\\|")} |`);
+    for (const e of state.ledger) {
+      const fixAt = [...e.history].reverse().find((h) => h.where)?.where;
+      out.push(`| ${e.id} | ${e.severity} | ${e.status} | ${loc(e)}${fixAt ? ` (fix: ${fixAt})` : ""} | ${e.reviewers.join(" + ")} | ${e.title.replace(/\|/g, "\\|")} |`);
+    }
   }
   // Evidence: what crossfire executed, what the builder claimed, what nobody checked.
   const breakerItems = state.ledger.filter((e) => e.source === "breaker");
+  const lastAnswer = (e) => e.history.at(-1)?.builder;
+  const answered = (a) => breakerItems.filter((e) => lastAnswer(e) === a).length;
+  const unanswered = breakerItems.filter((e) => !lastAnswer(e)).length;
   const reviewerFailures = (state.reviewerRuns ?? []).filter((r) => !r.ok);
   out.push(
     "",
@@ -77,21 +83,30 @@ export function renderReport(state, { minutesElapsed, changedFiles = [], head = 
     `- Proof commands crossfire ran itself (last run, round ${state.lastProof?.round ?? "-"}):${state.lastProof?.commands?.length ? "" : " none declared"}`,
     ...(state.lastProof?.commands ?? []).map((c) => `  - \`${c.command}\`: exit ${c.status}`),
     `- Tests the builder named this loop: ${(state.testsNamed ?? []).length}${(state.testsNamed ?? []).length ? ` (${state.testsNamed.slice(0, 12).join(", ")}${state.testsNamed.length > 12 ? ", ..." : ""})` : ""}. Crossfire checks that they pass only through the proof commands above.`,
-    `- Breaker: ${state.breaker === false ? "off" : `${breakerItems.length} attack(s) proven with failing tests; ${breakerItems.filter((e) => e.status === "closed" || e.status === "claimed_fixed").length} hardened, ${breakerItems.filter((e) => e.status === "disputed_internal").length} disputed (left to the reviewers)`}`,
+    `- Breaker: ${state.breaker === false ? "off" : `${breakerItems.length} attack(s) proven with failing tests; the builder answered ${answered("FIXED")} FIXED and ${answered("DISPUTED")} DISPUTED${unanswered ? `, ${unanswered} unanswered` : ""}${breakerItems.length ? (breakerItems.some((e) => e.status === "closed") ? "; the answers were in front of the reviewers in a later pass" : "; no review pass ran after the answers") : ""}`}`,
     `- Reviewers read the branch diff against \`${state.base}\` read-only: ${reviewersText ?? "not recorded"}${reviewerFailures.length ? `; ${reviewerFailures.length} reviewer pass(es) did not complete` : ""}.`,
     "- Not verified by crossfire: anything outside the proof commands (the full test suite, lint, migrations, deploys). CI on the pull request is that gate.",
   );
   const accepted = state.ledger.filter((e) => e.status === "wontfix" || (shipped && e.status === "claimed_fixed" && e.severity === "NIT"));
   if (accepted.length) out.push("", `Accepted nits (G7, not re-reviewed): ${accepted.map((e) => e.id).join(", ")}`);
   if (!shipped) {
+    const ids = (list) => list.map((e) => `${e.id} (${e.severity})`).join(", ");
     const open = [...openAboveNit(state), ...openNits(state)];
-    const unreviewed = state.ledger.filter((e) => e.status === "claimed_fixed" && e.severity !== "NIT");
+    const claimed = state.ledger.filter((e) => e.status === "claimed_fixed" && e.severity !== "NIT");
+    const reflagged = claimed.filter((e) => e.reflaggedPass != null && e.reflaggedPass > (e.claimedPass ?? -1));
+    const unreviewed = claimed.filter((e) => !reflagged.includes(e) && (e.claimedPass ?? -1) >= state.reviewPass);
+    const disputed = state.ledger.filter((e) => e.status === "disputed_internal" || e.status === "disputed");
+    const groups = [
+      [open, "Still open"],
+      [reflagged, "Claimed fixed, then re-flagged by a reviewer"],
+      [unreviewed, "Claimed fixed by the builder, not re-reviewed"],
+      [disputed, "Disputed by the builder, not settled by a reviewer"],
+    ].filter(([list]) => list.length);
     out.push(
       "",
       "## What the owner needs to decide",
       `- Gate ${t.gate}: ${t.reason}`,
-      open.length ? `- Still open: ${open.map((e) => `${e.id} (${e.severity})`).join(", ")}` : "- Nothing else is open.",
-      ...(unreviewed.length ? [`- Claimed fixed by the builder, not re-reviewed: ${unreviewed.map((e) => `${e.id} (${e.severity})`).join(", ")}`] : []),
+      ...(groups.length ? groups.map(([list, label]) => `- ${label}: ${ids(list)}`) : ["- Nothing else is open."]),
       "- Options: accept as is, give the builder a direction and start a new loop on top of this branch, or drop the change.",
     );
   }

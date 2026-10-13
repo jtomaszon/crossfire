@@ -22,19 +22,26 @@ export function buildFocus(state, { specText }) {
     lines.push(
       "",
       "Earlier findings and how the builder answered them. If one of these is still not resolved, report it again and START ITS TITLE WITH ITS TAG, for example \"[F2] still racy\". Do not re-report resolved ones.",
-      ...ledger.map((e) => `- [${e.id}] ${e.severity} ${e.file ?? ""}${e.lineStart ? `:${e.lineStart}` : ""} ${e.title} -> builder: ${e.history.at(-1)?.builder ?? e.status}${e.history.at(-1)?.note ? ` (${e.history.at(-1).note})` : ""}`),
+      ...ledger.map((e) => `- [${e.id}] ${e.severity} ${e.file ?? ""}${e.lineStart ? `:${e.lineStart}` : ""} ${e.title} -> builder: ${answer(e)}`),
     );
   }
   if (internal.length) {
     lines.push(
       "",
       "Before your review, an internal adversarial pass (same vendor as the builder) attacked the change with failing tests. What it proved and how the builder answered. Check that the fixes hold; where the builder DISPUTED an attack, decide yourself and report it if you agree it is a bug:",
-      ...internal.map((e) => `- ${e.title} -> builder: ${e.history.at(-1)?.builder ?? e.status}${e.history.at(-1)?.note ? ` (${e.history.at(-1).note})` : ""}`),
+      ...internal.map((e) => `- ${e.title} -> builder: ${answer(e)}`),
     );
   }
   const spec = specText.length > SPEC_MAX_CHARS ? `${specText.slice(0, SPEC_MAX_CHARS)}\n[spec truncated; full text at ${state.spec}]` : specText;
   lines.push("", "SPEC:", spec);
   return lines.join("\n");
+}
+
+/** The builder's last answer to a finding: FIXED (at file:line), DISPUTED, with its note. */
+function answer(e) {
+  const h = e.history.at(-1);
+  if (!h) return e.status;
+  return `${h.builder}${h.where ? ` at ${h.where}` : ""}${h.note ? ` (${h.note})` : ""}`;
 }
 
 /** Reviewers disagree on paths (Grok gives absolute ones): make them repo-relative so places match. */

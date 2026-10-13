@@ -23,6 +23,18 @@ export const MIN_VARIANTS = 3;
 /** One or more file:line cites, a line or a range, e.g. "lib/app.rb:120, spec/app_spec.rb:40-52". */
 export const WHERE_RE = /^\s*[^\s,:]+:\d+(-\d+)?(\s*,\s*[^\s,:]+:\d+(-\d+)?)*\s*$/;
 
+/** A `where` value: one or more file:line or file:start-end, lines from 1, ranges in order. */
+export function validWhere(value) {
+  const s = String(value ?? "");
+  if (!WHERE_RE.test(s)) return false;
+  return s.split(",").every((part) => {
+    const [, a, b] = /:(\d+)(?:-(\d+))?\s*$/.exec(part.trim()) ?? [];
+    const start = Number(a);
+    const end = b === undefined ? start : Number(b);
+    return start >= 1 && end >= start;
+  });
+}
+
 /** Fixing a real (non-nit) finding must name the rule and test its variants. */
 export function needsRule(entry) {
   return entry && entry.severity !== "NIT";
@@ -196,7 +208,7 @@ export function validateBuildResult(result, state, repoFacts) {
         if (typeof f.rule !== "string" || f.rule.trim().length < 15) problems.push(`${f.id}: FIXED needs \`rule\`, the broadest rule the fix enforces (one sentence)`);
         const variants = Array.isArray(f.variants) ? f.variants.filter((v) => v && typeof v.test === "string" && v.test.trim()) : [];
         if (variants.length < MIN_VARIANTS) problems.push(`${f.id}: FIXED needs at least ${MIN_VARIANTS} \`variants\` of the rule, each with the \`test\` that covers it (got ${variants.length})`);
-        if (!WHERE_RE.test(String(f.where ?? ""))) problems.push(`${f.id}: FIXED needs \`where\`, the file:line of the fix (e.g. "lib/app.rb:120" or "lib/app.rb:15-20"; several separated by commas)`);
+        if (!validWhere(f.where)) problems.push(`${f.id}: FIXED needs \`where\`, the file:line of the fix (e.g. "lib/app.rb:120" or "lib/app.rb:15-20"; several separated by commas; lines start at 1)`);
       }
       answered.set(f.id, f);
     });

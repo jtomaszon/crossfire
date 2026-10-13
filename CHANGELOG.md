@@ -18,6 +18,14 @@ Found by reading real loops on a second machine:
 - `REVIEWERS: codex 1/1 passes (last verdict: needs-attention)`: "1/1 passes" counts reviews that ran, and was being read as "approved".
 - `crossfire --version` works (it failed with "--version needs a value").
 
+From crossfire's review of this release (Codex + Grok):
+
+- Re-check: every earlier finding near an untagged new one is unclear, whatever the severity (only the first was, so a second one nearby could be called fixed); a `[Pn]` tag counts only at the start of a title.
+- Escalation reports separate what is still open, fixes a reviewer re-flagged (G3/G4), fixes no reviewer has seen yet, and disputes no reviewer settled. The finding behind a G4 is recorded as open.
+- The breaker line counts the builder's answers (FIXED, DISPUTED) and says whether a review ran after them, instead of calling every closed attack "hardened".
+- `where` must use lines from 1 with ranges in order, is kept on the finding, shown to the reviewers next pass ("FIXED at a.js:10") and in the report's findings table.
+- An odd `variants` value on a DISPUTED answer no longer crashes `built`.
+
 ## 1.0.1
 
 Public-repository hygiene, from the first outside review.
