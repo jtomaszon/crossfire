@@ -20,6 +20,21 @@ function findingBlock(e) {
 
 export const MIN_VARIANTS = 3;
 
+/** One or more file:line cites, a line or a range, e.g. "lib/app.rb:120, spec/app_spec.rb:40-52". */
+export const WHERE_RE = /^\s*[^\s,:]+:\d+(-\d+)?(\s*,\s*[^\s,:]+:\d+(-\d+)?)*\s*$/;
+
+/** A `where` value: one or more file:line or file:start-end, lines from 1, ranges in order. */
+export function validWhere(value) {
+  const s = String(value ?? "");
+  if (!WHERE_RE.test(s)) return false;
+  return s.split(",").every((part) => {
+    const [, a, b] = /:(\d+)(?:-(\d+))?\s*$/.exec(part.trim()) ?? [];
+    const start = Number(a);
+    const end = b === undefined ? start : Number(b);
+    return start >= 1 && end >= start;
+  });
+}
+
 /** Fixing a real (non-nit) finding must name the rule and test its variants. */
 export function needsRule(entry) {
   return entry && entry.severity !== "NIT";
@@ -38,6 +53,7 @@ export function resultExample(owed) {
               id: e.id,
               status: "FIXED",
               note: "what you changed",
+              where: "lib/app.rb:120, spec/app_spec.rb:40-52",
               rule: "the broadest rule that still holds, e.g. 'a post-commit decision reads committed state, never the in-memory object'",
               variants: [
                 { scenario: "the reported case", test: "test name in the tree" },
@@ -129,8 +145,8 @@ export function renderBrief(state, { resultFile, branch, failures, lessons = [] 
       "3. Find every other place in the code that breaks the same rule mechanically (grep, AST, call graph), not just the line cited, and fix them all.",
       "",
       kind === "harden"
-        ? "Answer every attack in `fixes`: FIXED (with `rule` and `variants`), or DISPUTED with a concrete reason (the reviewers will see your reason and decide). WONTFIX is only allowed for NIT."
-        : "Answer every finding in `fixes`: FIXED (with `rule` and `variants`), or DISPUTED with your reason (that stops the loop and goes to the owner). WONTFIX is only allowed for NIT.",
+        ? "Answer every attack in `fixes`: FIXED (with `where`, the file:line of your fix, plus `rule` and `variants`), or DISPUTED with a concrete reason (the reviewers will see your reason and decide). WONTFIX is only allowed for NIT."
+        : "Answer every finding in `fixes`: FIXED (with `where`, the file:line of your fix, plus `rule` and `variants`), or DISPUTED with your reason (that stops the loop and goes to the owner). WONTFIX is only allowed for NIT.",
       "",
       ...owed.map(findingBlock),
     );
@@ -192,6 +208,7 @@ export function validateBuildResult(result, state, repoFacts) {
         if (typeof f.rule !== "string" || f.rule.trim().length < 15) problems.push(`${f.id}: FIXED needs \`rule\`, the broadest rule the fix enforces (one sentence)`);
         const variants = Array.isArray(f.variants) ? f.variants.filter((v) => v && typeof v.test === "string" && v.test.trim()) : [];
         if (variants.length < MIN_VARIANTS) problems.push(`${f.id}: FIXED needs at least ${MIN_VARIANTS} \`variants\` of the rule, each with the \`test\` that covers it (got ${variants.length})`);
+        if (!validWhere(f.where)) problems.push(`${f.id}: FIXED needs \`where\`, the file:line of the fix (e.g. "lib/app.rb:120" or "lib/app.rb:15-20"; several separated by commas; lines start at 1)`);
       }
       answered.set(f.id, f);
     });
@@ -234,7 +251,7 @@ export function renderBreakerBrief(state, { resultFile, branch, head, lessons = 
     "2. Write the test there, with the repository's own test framework and conventions, and run it. It must fail because of the bug, not because of a typo or setup.",
     "3. Remove the worktree when done (`git worktree remove --force <path>`). Leave the real working tree exactly as you found it: no edits, no commits, no stashes.",
     "",
-    "Report only attacks you proved with a failing test. Ideas you could not prove go in `summary`, one line each. One proven, real bug beats ten guesses.",
+    "Report only attacks you proved with a failing test, each with the `file` and `line` the bug is at. Ideas you could not prove go in `summary`, one line each. One proven, real bug beats ten guesses.",
   ];
   if (earlier.length) {
     out.push("", "## Already found by the reviewers in earlier passes (do not report these again)", ...earlier.map((e) => `- [${e.id}] ${e.title} (${e.status})`));
@@ -284,9 +301,10 @@ export function validateBreakerResult(result) {
   const attacks = [];
   (Array.isArray(result.attacks) ? result.attacks : []).forEach((a, i) => {
     if (!a || a.proven !== true) return;
-    for (const k of ["title", "scenario", "test"]) {
+    for (const k of ["title", "scenario", "test", "file"]) {
       if (typeof a[k] !== "string" || !a[k].trim()) problems.push(`attacks[${i}].${k} is required for a proven attack`);
     }
+    if (!Number.isInteger(a.line) || a.line < 1) problems.push(`attacks[${i}].line is required for a proven attack: the line the bug is at`);
     const line = Number.isInteger(a.line) ? a.line : null;
     attacks.push({
       title: String(a.title ?? "").trim(),

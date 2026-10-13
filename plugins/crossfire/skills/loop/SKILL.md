@@ -1,6 +1,6 @@
 ---
 name: loop
-description: Run a change through crossfire's spec-first build -> review -> fix loop - a builder subagent implements a spec test-first, OpenAI Codex (required) and xAI Grok Build (optional) review every round from outside Claude, and a referee script decides every next step until the change ships or needs the owner. Use for any non-trivial code change that should be independently reviewed before it merges, or when the user says "crossfire", "build-review loop" or "run it through review".
+description: Use when the user says "crossfire", "run it through review", "build-review loop", or asks for any non-trivial code change that should be independently reviewed before it merges. Spec-first build -> breaker -> cross-vendor review (OpenAI Codex required, xAI Grok Build optional) -> fix loop, with a referee script deciding every step until SHIP or ESCALATE.
 argument-hint: "[what to build, or a path to an existing spec]"
 ---
 

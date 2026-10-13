@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.1.0
+
+From the first outside review.
+
+- **Evidence in every SHIP and ESCALATE report:** the proof commands crossfire ran itself and their exit codes, the tests the builder named, what the breaker proved and how it was answered, what the reviewers read, and what crossfire did not verify (the full suite, lint, migrations, deploys: CI on the pull request is that gate).
+- **file:line everywhere:** a FIXED BLOCKER or CHANGES finding needs `where` (the file:line of the fix), and a proven breaker attack needs its `file` and `line`; the referee refuses results without them.
+- **"Still open" needs the reviewer's tag.** On a re-check, an earlier finding is still open only when a reviewer re-flags it with its `[Pn]` tag. An untagged finding near an earlier one is reported as new, "near Pn", and that earlier finding as unclear: never guessed fixed or open (it was a known issue).
+- **Skill descriptions start with their trigger phrases,** so Claude routes to the right skill.
+- `where` accepts line ranges (`src/serve.mjs:15-20`) and lists (`a.mjs:3, b.mjs:9`); a pre-release refused ranges.
+- The timeline records a review pass when the reviewers finish, not when they start.
+
+Found by reading real loops on a second machine:
+
+- **Fix: a G6 (time budget) escalation right after the breaker dropped its proven attacks,** and the report said "Nothing else is open". The attacks are now recorded before the budget is checked.
+- Escalation reports list findings the builder claimed fixed that no reviewer re-checked ("Claimed fixed by the builder, not re-reviewed").
+- `REVIEWERS: codex 1/1 passes (last verdict: needs-attention)`: "1/1 passes" counts reviews that ran, and was being read as "approved".
+- `crossfire --version` works (it failed with "--version needs a value").
+
+From crossfire's review of this release (Codex + Grok):
+
+- Re-check: every earlier finding near an untagged new one is unclear, whatever the severity (only the first was, so a second one nearby could be called fixed); a `[Pn]` tag counts only at the start of a title.
+- Escalation reports separate what is still open, fixes a reviewer re-flagged (G3/G4), fixes no reviewer has seen yet, and disputes no reviewer settled. The finding behind a G4 is recorded as open.
+- The breaker line counts the builder's answers (FIXED, DISPUTED) and says whether a review ran after them, instead of calling every closed attack "hardened".
+- `where` must use lines from 1 with ranges in order, is kept on the finding, shown to the reviewers next pass ("FIXED at a.js:10") and in the report's findings table.
+- An odd `variants` value on a DISPUTED answer no longer crashes `built`.
+- Second review: when two reviewers report the same place, every reviewer's tag counts (a merged finding kept only one title). A finding at the place of several claimed fixes keeps all of them open (only one was, the rest were closed as accepted), and on a re-check a tagged re-flag keeps its neighbours unclear. Breaker answers are counted as reviewed or not one by one. Claimed fixes in loops started before 1.1.0 are listed as not re-reviewed. The builder brief's `where` example passes the `where` check.
+- Third review: a finding a reviewer re-flags after it was closed is reopened, and the reviewer's new title and text reach the escalation report (the report said "Nothing else is open"). A merged finding counts at every reviewer's location. A builder answer changed after a review is not counted as reviewed.
+
 ## 1.0.1
 
 Public-repository hygiene, from the first outside review.

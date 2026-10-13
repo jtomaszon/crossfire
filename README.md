@@ -151,7 +151,6 @@ Both run read-only and return the same review schema. The focus text carries the
 ## Known issues
 
 - **Watch lock takeover under a long pause.** One watcher per PR is enforced with a lock file and a takeover protocol for stale locks. If a watcher is suspended for more than 10 seconds in the middle of taking over a stale lock, a second watcher can take it too (found by a crossfire review, reproduced in simulation). It needs a stale lock, two watchers started for the same PR, and a pause at that instant. An OS-backed exclusive lock would remove it.
-- **"Still open" by place.** A re-check counts an earlier finding as still open when a new finding of the same severity lands within a few lines of it, even if the earlier one was fixed. Read the finding before acting on a "still open" that matched by place.
 
 ## Develop
 

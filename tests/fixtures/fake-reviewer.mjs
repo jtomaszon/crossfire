@@ -13,6 +13,7 @@ if (argv[0] === "setup" || argv[0] === "check") {
   process.stdout.write(JSON.stringify({ ready: process.env[`FAKE_${name.toUpperCase()}_READY`] !== "0", nextSteps: ["Run `codex login`."] }));
   process.exit(0);
 }
+if (process.env.FAKE_REVIEW_DELAY_MS) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.FAKE_REVIEW_DELAY_MS));
 // Test hook: commit in the repository while "reviewing", as another process might.
 if (process.env.FAKE_REVIEW_COMMIT_IN) {
   const { execFileSync } = await import("node:child_process");

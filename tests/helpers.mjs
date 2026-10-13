@@ -107,7 +107,9 @@ export function sandbox(opts = {}) {
         gitc(repo, "commit", "-q", "-m", "round");
       }
       const head = sh(repo, "git", ["rev-parse", "HEAD"]);
-      const full = fixes.map((f) => (f.status === "FIXED" && f.rule === undefined ? { ...f, rule: "every write goes through the one versioned writer", variants: [{ scenario: "a", test: "t_a" }, { scenario: "b", test: "t_b" }, { scenario: "c", test: "t_c" }] } : f));
+      const full = fixes
+        .map((f) => (f.status === "FIXED" && f.rule === undefined ? { ...f, rule: "every write goes through the one versioned writer", variants: [{ scenario: "a", test: "t_a" }, { scenario: "b", test: "t_b" }, { scenario: "c", test: "t_c" }] } : f))
+        .map((f) => (f.status === "FIXED" && f.where === undefined ? { ...f, where: "app.txt:1" } : f));
       fs.writeFileSync(resultFile, JSON.stringify({ status, summary: "did the thing", commit: head, tests, fixes: full }));
     },
     cleanup() {

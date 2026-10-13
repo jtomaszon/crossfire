@@ -16,7 +16,7 @@ import { appendLessons, lessonsBlock, lessonsFromCheck, lessonsFromLoop, memoryF
 import { classifyProofFailure, grokSocketHint, readHealth, recordAttempt, summarize } from "./lib/health.mjs";
 import { CrossfireError, EXIT, atomicWriteJson, minutesBetween, nowIso, readJsonFile, run, runShell, tail, writeText } from "./lib/util.mjs";
 
-const VERSION = "1.0.1";
+const VERSION = "1.1.0";
 
 const USAGE = `crossfire ${VERSION}: referee for a spec-first build -> review -> fix loop
 
@@ -54,7 +54,7 @@ Exit codes: 0 ok, 2 usage, 3 malformed (re-ask, nothing advanced), 4 loop alread
 
 function parseArgs(argv) {
   const repeat = new Set(["e2e", "invariant", "from", "ack"]);
-  const bool = new Set(["json", "force", "help", "no-preflight", "no-failure-modes", "reset-cursor", "ack-only"]);
+  const bool = new Set(["json", "force", "help", "no-preflight", "no-failure-modes", "reset-cursor", "ack-only", "version"]);
   const opts = { e2e: [], invariant: [], from: [], ack: [] };
   const pos = [];
   for (let i = 0; i < argv.length; i += 1) {
@@ -144,7 +144,9 @@ export function reviewersLine(state) {
       const mine = runs.filter((r) => r.reviewer === name);
       const ok = mine.filter((r) => r.ok).length;
       const fail = [...mine].reverse().find((r) => !r.ok);
-      return `${name} ${ok}/${passes} passes${ok < passes && fail ? ` (${fail.skipped ? "not usable" : "failed"}: ${fail.error})` : ""}`;
+      const last = [...mine].reverse().find((r) => r.ok);
+      const verdict = last?.verdict && last.verdict !== "approve" ? ` (last verdict: ${last.verdict})` : "";
+      return `${name} ${ok}/${passes} passes${verdict}${ok < passes && fail ? ` (${fail.skipped ? "not usable" : "failed"}: ${fail.error})` : ""}`;
     })
     .join(", ");
 }
@@ -455,6 +457,9 @@ function built(ctx, opts) {
       out(ctx, [statusLine(state, minutesBetween(state.startedAt)), "PROOF ENVIRONMENT: a proof command cannot run here (toolchain or PATH), so this is not the builder's fault. Nothing advanced; the builder's result is kept.", envFailureText(g0.failures), `FIX: crossfire proof --slug ${state.slug} --e2e "<working command>" [--invariant "<working command>"]... then run crossfire built --slug ${state.slug} again.`, `LOG: ${files.g0(dir, builtRound)}`].join("\n"), { environment: true, failures: g0.failures.filter((f) => f.kind === "environment") });
       return EXIT.ENVIRONMENT;
     }
+    // Evidence for the report: what crossfire itself ran, and which tests the builder named.
+    state.lastProof = { round: builtRound, at, commands: [...state.e2e, ...state.invariants].map((command) => ({ command, status: g0.failures.find((f) => f.command === command)?.status ?? 0 })) };
+    state.testsNamed = [...new Set([...(state.testsNamed ?? []), ...(Array.isArray(result.tests) ? result.tests : []).map((t) => t?.name), ...(Array.isArray(result.fixes) ? result.fixes : []).flatMap((f) => (Array.isArray(f?.variants) ? f.variants : []).map((v) => v?.test))].filter(Boolean))];
     afterBuild(state, result, g0, { at, minutesElapsed: minutesBetween(state.startedAt) });
     saveState(dir, state);
     const proofCount = state.e2e.length + state.invariants.length;
@@ -533,7 +538,7 @@ function check(ctx, opts) {
   let since = null;
   if (prev) {
     const d = compareWithPrevious(prev.findings, findings);
-    since = { id: prev.id, head: prev.head, resolved: d.resolved, stillOpen: d.stillOpen, fresh: d.fresh.length };
+    since = { id: prev.id, head: prev.head, resolved: d.resolved, stillOpen: d.stillOpen, unclear: d.unclear, fresh: d.fresh.length, near: d.fresh.filter((f) => f.nearPrevious).map((f) => ({ title: f.title, near: f.nearPrevious.map((n) => `P${n}`).join(", ") })) };
   }
   const record = { version: 1, id, at, repo, branch, head, base, baseSha, focus: opts.focus ?? prev?.focus ?? null, spec: opts.spec ? path.resolve(ctx.cwd, opts.spec) : null, reviewerRuns, reviewersText, reviews: ok, findings, approved: findings.length === 0, since };
   atomicWriteJson(path.join(dir, "check.json"), record);
@@ -550,7 +555,7 @@ function check(ctx, opts) {
     `CHECK ${id} · ${branch ?? "HEAD"} ${head.slice(0, 12)} against ${base}`,
     `REVIEWERS: ${reviewersText}`,
     ...results.filter((r) => !r.ok).map((r) => `WARNING: ${r.reviewer} did not review (${r.error}); this check rests on Codex alone.`),
-    ...(since ? [`SINCE ${since.id} (${since.head.slice(0, 12)}): ${since.resolved.length} fixed, ${since.stillOpen.length} still open, ${since.fresh} new`, ...since.resolved.map((p) => `  fixed: [P${p.index}] ${p.title}`), ...since.stillOpen.map((s) => `  still open: [P${s.previous.index}] ${s.previous.title}`)] : []),
+    ...(since ? [`SINCE ${since.id} (${since.head.slice(0, 12)}): ${since.resolved.length} fixed, ${since.stillOpen.length} still open, ${since.unclear.length} unclear, ${since.fresh} new`, ...since.resolved.map((p) => `  fixed: [P${p.index}] ${p.title}`), ...since.stillOpen.map((s) => `  still open: [P${s.previous.index}] ${s.previous.title}`), ...since.unclear.map((p) => `  unclear: [P${p.index}] ${p.title} (a new finding is near it; read both)`), ...since.near.map((n) => `  new (near ${n.near}): ${n.title}`)] : []),
     `VERDICT: ${findings.length ? `${findings.length} finding(s): ${counts}` : "APPROVED, nothing to fix"}`,
     ...findings.map((f, i) => `  ${i + 1}. ${f.severity} ${f.file ?? ""}${f.lineStart ? `:${f.lineStart}` : ""} ${f.title} (${f.reviewers.join("+")})`),
     `REPORT: ${report}`,
@@ -824,8 +829,8 @@ function review(ctx, opts) {
 
     const pass = state.reviewPass + 1;
     const focus = buildFocus(state, { specText: readSpec(state.spec) });
-    const at = nowIso();
     const results = reviewers.map((p) => runReviewer(p, { cwd: state.repo, base: state.baseSha, focus, timeoutMs }));
+    const at = nowIso(); // the timeline records when the reviews finished, not when they started
 
     // Reviewers read the live checkout: if HEAD moved meanwhile, they may have read another
     // commit. Discard them before anything is recorded; nothing advances.
@@ -896,13 +901,13 @@ export function main(argv = process.argv.slice(2)) {
   try {
     const { cmd, opts } = parseArgs(argv);
     ctx = { json: Boolean(opts.json), cwd: path.resolve(opts.cwd ?? process.cwd()) };
+    if (opts.version || cmd === "version") {
+      process.stdout.write(`${VERSION}\n`);
+      return EXIT.OK;
+    }
     if (!cmd || opts.help || cmd === "help") {
       process.stdout.write(`${USAGE}\n`);
       return cmd || opts.help ? EXIT.OK : EXIT.USAGE;
-    }
-    if (cmd === "--version" || cmd === "version") {
-      process.stdout.write(`${VERSION}\n`);
-      return EXIT.OK;
     }
     const commands = { doctor: () => doctor(ctx), memory: () => memoryCmd(ctx), check: () => check(ctx, opts), checks: () => checks(ctx), watch: () => watch(ctx, opts), spec: () => specCmd(ctx, opts), proof: () => proof(ctx, opts), attacked: () => attacked(ctx, opts), init: () => init(ctx, opts), built: () => built(ctx, opts), review: () => review(ctx, opts), status: () => status(ctx, opts), report: () => report(ctx, opts) };
     if (!commands[cmd]) throw new CrossfireError(`unknown command "${cmd}"\n\n${USAGE}`);

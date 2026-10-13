@@ -392,7 +392,7 @@ test("check: reviews a branch once with no spec, no builder and no loop", (t) =>
   const r = sb.cf("check", "--base", "main", "--focus", "PR: print v2 on start", "--name", "pr-1");
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /CHECK pr-1 · feature [0-9a-f]{12} against main/);
-  assert.match(r.stdout, /REVIEWERS: codex 1\/1 passes, grok 1\/1 passes/);
+  assert.match(r.stdout, /REVIEWERS: codex 1\/1 passes \(last verdict: needs-attention\), grok 1\/1 passes/);
   assert.match(r.stdout, /VERDICT: 2 finding\(s\): 1 blocker, 0 changes, 1 nit/);
   assert.match(r.stdout, /TO FIX WITH A LOOP: .*--from-check pr-1/);
   assert.match(sb.calls("codex").at(-1).at(-1), /PR: print v2 on start/);
@@ -471,13 +471,28 @@ test("check --since: the reviewers get the earlier findings tagged, and the delt
   sb.queue("grok", approve);
   const r = sb.cf("check", "--base", "main", "--since", "pr-1", "--name", "pr-1-b");
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /SINCE pr-1 \([0-9a-f]{12}\): 1 fixed, 1 still open, 0 new/);
+  assert.match(r.stdout, /SINCE pr-1 \([0-9a-f]{12}\): 1 fixed, 1 still open, 0 unclear, 0 new/);
   assert.match(r.stdout, /fixed: \[P2\] missing index/);
   assert.match(r.stdout, /still open: \[P1\] token unchecked/);
   const focus = sb.calls("codex").at(-1).at(-1);
   assert.match(focus, /\[P1\] BLOCKER app\.txt:1 token unchecked/);
   assert.match(focus, /PR: tokens/, "the earlier focus carries over");
   assert.match(fs.readFileSync(`${sb.repo}/.crossfire/checks/pr-1-b/report.md`, "utf8"), /## Since pr-1/);
+});
+
+test("check --since: a new finding near an earlier one prints its id once (near P2, not PP2)", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  commitChange(sb);
+  sb.queue("codex", needs(finding("high", "token unchecked", "app.txt", 1), finding("medium", "missing index", "db.sql", 3)));
+  sb.queue("grok", approve);
+  sb.cf("check", "--base", "main", "--name", "pr-1");
+  commitChange(sb, "v3\n");
+  sb.queue("codex", needs(finding("low", "index name", "db.sql", 4)));
+  sb.queue("grok", approve);
+  const r = sb.cf("check", "--base", "main", "--since", "pr-1", "--name", "pr-1-b");
+  assert.match(r.stdout, /new \(near P2\): index name/);
+  assert.doesNotMatch(r.stdout, /PP\d/);
 });
 
 function runAsync(sb, args) {
@@ -988,4 +1003,72 @@ test("proof commands can change only while the builder is next", (t) => {
   const r = sb.cf("proof", "--slug", "demo", "--e2e", "true");
   assert.equal(r.status, 2);
   assert.match(r.stderr, /only while the builder is next/);
+});
+
+test("the SHIP report carries an Evidence block: what crossfire ran, what the builder named, what nobody verified", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  let next = init(sb, "--e2e", "grep -q v2 app.txt");
+  sb.build(next.resultFile, { tests: [{ name: "test_prints_v2", command: "node --test", passed: true }] });
+  sb.cf("built", "--slug", "demo");
+  sb.queue("codex", approve);
+  sb.queue("grok", approve);
+  next = sb.cf("review", "--slug", "demo", "--json").json();
+  const report = fs.readFileSync(next.report, "utf8");
+  assert.match(report, /## Evidence/);
+  assert.match(report, /`grep -q v2 app\.txt`: exit 0/);
+  assert.match(report, /Tests the builder named this loop: 1 \(test_prints_v2\)/);
+  assert.match(report, /Not verified by crossfire: .*CI on the pull request is that gate/);
+});
+
+test("a FIXED real finding without where (file:line) is refused; a proven attack without file and line is refused", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  let next = init(sb);
+  sb.build(next.resultFile);
+  sb.cf("built", "--slug", "demo");
+  sb.queue("codex", needs(finding("high", "x")));
+  sb.queue("grok", approve);
+  next = sb.cf("review", "--slug", "demo", "--json").json();
+  sb.build(next.resultFile, { fixes: [{ id: "F1", status: "FIXED", where: "somewhere", rule: "every write goes through the one versioned writer", variants: [{ test: "a" }, { test: "b" }, { test: "c" }] }] });
+  const r = sb.cf("built", "--slug", "demo");
+  assert.equal(r.status, 3);
+  assert.match(r.stdout, /F1: FIXED needs `where`, the file:line of the fix/);
+});
+
+test("the timeline records when the reviews finished, not when they started", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  const next = init(sb);
+  sb.build(next.resultFile);
+  sb.cf("built", "--slug", "demo");
+  sb.queue("codex", approve);
+  sb.queue("grok", approve);
+  sb.env.FAKE_REVIEW_DELAY_MS = "1500";
+  const before = Date.now();
+  sb.cf("review", "--slug", "demo");
+  const state = JSON.parse(fs.readFileSync(`${sb.repo}/.crossfire/runs/demo/state.json`, "utf8"));
+  const recorded = state.history.find((h) => h.event === "review-recorded");
+  assert.ok(Date.parse(recorded.at) - before >= 2500, `recorded ${Date.parse(recorded.at) - before} ms after start: two reviewers of 1.5 s each`);
+});
+
+test("crossfire --version prints the version", () => {
+  const r = spawnSync(process.execPath, [new URL("../plugins/crossfire/scripts/crossfire.mjs", import.meta.url).pathname, "--version"], { encoding: "utf8" });
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /^\d+\.\d+\.\d+\n$/);
+});
+
+test("a DISPUTED answer with odd variants does not crash built; the loop reaches its gate", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  let next = init(sb);
+  sb.build(next.resultFile);
+  sb.cf("built", "--slug", "demo");
+  sb.queue("codex", needs(finding("high", "x")));
+  sb.queue("grok", approve);
+  next = sb.cf("review", "--slug", "demo", "--json").json();
+  sb.build(next.resultFile, { fixes: [{ id: "F1", status: "DISPUTED", note: "not a bug", variants: "none" }] });
+  const r = sb.cf("built", "--slug", "demo");
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /GATE: G3/);
 });

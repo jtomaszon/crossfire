@@ -1,6 +1,6 @@
 ---
 name: review
-description: Review an existing pull request or branch with crossfire's cross-vendor reviewers, OpenAI Codex (required) and xAI Grok Build (when it can run), without starting a build loop - no spec, no builder. Use when the user asks to review a PR, check someone's branch, or get a second opinion on changes that already exist; offers to fix the findings with a crossfire loop afterwards.
+description: Use when asked to review a PR, check someone's branch, re-check a PR after changes, watch a PR, or get a second opinion on changes that already exist. Reviews with OpenAI Codex (required) and xAI Grok Build (when it can run) without building anything; can watch the PR and hand findings to a crossfire loop that starts at the fix round.
 argument-hint: "[PR number or URL, or a branch name]"
 ---
 

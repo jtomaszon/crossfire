@@ -199,3 +199,139 @@ test("first review pass outcome is recorded (the number to watch)", () => {
   afterReview(s2, [codex([f("CHANGES", "x")])], t);
   assert.deepEqual(s2.firstPass, { approved: false, findings: 1 });
 });
+
+import { renderReport } from "../plugins/crossfire/scripts/lib/report.mjs";
+
+test("G6 right after the breaker: its proven attacks are in the ledger and the escalation report", () => {
+  const s = fresh({ breaker: true, maxMinutes: 10 });
+  afterBuild(s, done(), green, t);
+  const next = afterBreak(s, [attack("nested rollback loses the flag")], { at, minutesElapsed: 11 });
+  assert.equal(next.gate, "G6");
+  assert.equal(s.ledger[0].id, "B1");
+  const report = renderReport(s, { minutesElapsed: 11 });
+  assert.match(report, /Still open: B1 \(BLOCKER\)/);
+  assert.doesNotMatch(report, /Nothing else is open/);
+});
+
+test("an escalation report lists findings the builder claimed fixed that no reviewer re-checked", () => {
+  const s = fresh({ maxMinutes: 10 });
+  afterBuild(s, done(), green, t);
+  afterReview(s, [codex([f("BLOCKER", "hole")])], t);
+  const next = afterBuild(s, done([{ id: "F1", status: "FIXED", where: "a.js:10" }]), green, { at, minutesElapsed: 11 });
+  assert.equal(next.gate, "G6");
+  const report = renderReport(s, { minutesElapsed: 11 });
+  assert.match(report, /Claimed fixed by the builder, not re-reviewed: F1 \(BLOCKER\)/);
+});
+
+test("G3 and G4 escalations: a re-flagged fix is reported as re-flagged, and the G4 finding is open", () => {
+  const s = fresh();
+  afterBuild(s, done(), green, t);
+  afterReview(s, [codex([f("BLOCKER", "hole", "a.js", 10), f("BLOCKER", "leak", "b.js", 40)])], t);
+  afterBuild(s, done([{ id: "F1", status: "FIXED", where: "a.js:10" }, { id: "F2", status: "FIXED", where: "b.js:40" }]), green, t);
+  const next = afterReview(s, [codex([f("BLOCKER", "[F1] still a hole", "a.js", 10), f("CHANGES", "leak on retry", "b.js", 41)])], t);
+  assert.ok(["G3", "G4"].includes(next.gate));
+  const report = renderReport(s, { minutesElapsed: 2 });
+  assert.match(report, /Claimed fixed, then re-flagged \(or flagged at the same place\) by a reviewer: F1 \(BLOCKER\), F2 \(BLOCKER\)/);
+  assert.doesNotMatch(report, /not re-reviewed/);
+  assert.match(report, /Still open: F3 \(CHANGES\)/);
+  assert.match(report, /a\.js:10 \(fix: a\.js:10\)/);
+});
+
+test("breaker evidence counts the builder's answers; a dispute on an early stop is shown to the owner", () => {
+  const s = fresh({ breaker: true, maxMinutes: 10 });
+  afterBuild(s, done(), green, t);
+  afterBreak(s, [attack("maybe a race"), attack("real hole", "b.js", 5)], t);
+  const next = afterBuild(s, done([{ id: "B1", status: "DISPUTED", note: "lock covers it" }, { id: "B2", status: "FIXED", where: "b.js:5" }]), green, { at, minutesElapsed: 11 });
+  assert.equal(next.gate, "G6");
+  const report = renderReport(s, { minutesElapsed: 11 });
+  assert.match(report, /the builder answered 1 FIXED and 1 DISPUTED; 0 of these answers went through a later review pass, 2 did not/);
+  assert.match(report, /Claimed fixed by the builder, not re-reviewed: B2 \(BLOCKER\)/);
+  assert.match(report, /Disputed by the builder, not settled by a reviewer: B1 \(BLOCKER\)/);
+  assert.doesNotMatch(report, /hardened/);
+});
+
+
+test("two reviewers tag different earlier findings at the same place: both are re-flagged (G3)", () => {
+  const s = fresh();
+  afterBuild(s, done(), green, t);
+  afterReview(s, [codex([f("BLOCKER", "a", "a.js", 10), f("BLOCKER", "b", "a.js", 12)])], t);
+  afterBuild(s, done([{ id: "F1", status: "FIXED", where: "a.js:10" }, { id: "F2", status: "FIXED", where: "a.js:12" }]), green, t);
+  const grok = { reviewer: "grok", ok: true, verdict: "needs-attention", summary: "s", findings: [f("BLOCKER", "[F2] still b", "a.js", 11)] };
+  afterReview(s, [codex([f("BLOCKER", "[F1] still a", "a.js", 11)]), grok], t);
+  assert.ok(s.history.some((h) => /F1 re-flagged/.test(h.detail ?? "")) || s.terminal.reason.includes("F1"));
+  assert.equal(s.ledger.find((e) => e.id === "F2").status, "claimed_fixed", "F2 is not closed");
+  assert.equal(s.ledger.find((e) => e.id === "F1").status, "claimed_fixed");
+});
+
+test("one finding at the place of two claimed fixes: neither is closed, G4 names both", () => {
+  const s = fresh();
+  afterBuild(s, done(), green, t);
+  afterReview(s, [codex([f("BLOCKER", "a", "a.js", 10), f("CHANGES", "b", "a.js", 12)])], t);
+  afterBuild(s, done([{ id: "F1", status: "FIXED", where: "a.js:10" }, { id: "F2", status: "FIXED", where: "a.js:12" }]), green, t);
+  const next = afterReview(s, [codex([f("BLOCKER", "new at 11", "a.js", 11)])], t);
+  assert.equal(next.gate, "G4");
+  assert.deepEqual(s.ledger.filter((e) => e.status === "closed").map((e) => e.id), []);
+  const report = renderReport(s, { minutesElapsed: 2 });
+  assert.match(report, /F1 \(BLOCKER\), F2 \(CHANGES\)/);
+});
+
+test("breaker coverage is counted per answer across rounds", () => {
+  const s = fresh({ breaker: true, maxMinutes: 10 });
+  afterBuild(s, done(), green, t);
+  afterBreak(s, [attack("first", "a.js", 10)], t);
+  afterBuild(s, done([{ id: "B1", status: "FIXED", where: "a.js:10" }]), green, t);
+  afterReview(s, [codex([f("CHANGES", "elsewhere", "z.js", 90)])], t);
+  afterBuild(s, done([{ id: "F1", status: "FIXED", where: "z.js:90" }]), green, t);
+  afterBreak(s, [attack("second", "b.js", 5)], t);
+  const next = afterBuild(s, done([{ id: "B2", status: "FIXED", where: "b.js:5" }]), green, { at, minutesElapsed: 11 });
+  assert.equal(next.gate, "G6");
+  const report = renderReport(s, { minutesElapsed: 11 });
+  assert.match(report, /1 of these answers went through a later review pass, 1 did not/);
+});
+
+test("a claimed fix from a loop started before 1.1.0 (no claimedPass) is listed as not re-reviewed", () => {
+  const s = fresh();
+  s.ledger.push({ id: "F1", source: "review", severity: "BLOCKER", title: "x", file: "a.js", lineStart: 1, lineEnd: 1, reviewers: ["codex"], status: "claimed_fixed", claimedRound: 2, history: [{ builder: "FIXED" }] });
+  s.terminal = { kind: "escalated", gate: "G1", reason: "reviewer failed twice" };
+  assert.match(renderReport(s, { minutesElapsed: 5 }), /not re-reviewed: F1 \(BLOCKER\)/);
+});
+
+test("closed on pass 2, re-flagged on pass 3: reopened, the reviewer's words reach the owner", () => {
+  const s2 = fresh();
+  afterBuild(s2, done(), green, t);
+  afterReview(s2, [codex([f("BLOCKER", "hole", "a.js", 10), f("CHANGES", "style", "z.js", 80)])], t);
+  afterBuild(s2, done([{ id: "F1", status: "FIXED", where: "a.js:10" }, { id: "F2", status: "FIXED", where: "z.js:80" }]), green, t);
+  afterReview(s2, [codex([f("CHANGES", "z still off", "z.js", 200)])], t);
+  assert.equal(s2.ledger.find((e) => e.id === "F1").status, "closed");
+  afterBuild(s2, done([{ id: "F3", status: "FIXED", where: "z.js:200" }]), green, t);
+  const next = afterReview(s2, [codex([f("BLOCKER", "[F1] hole is back via retry", "a.js", 10)])], t);
+  assert.equal(next.gate, "G3");
+  assert.match(s2.terminal.reason, /hole is back via retry/);
+  assert.equal(s2.ledger.find((e) => e.id === "F1").status, "open");
+  const report = renderReport(s2, { minutesElapsed: 3 });
+  assert.match(report, /re-flagged \(or flagged at the same place\) by a reviewer: F1/);
+  assert.match(report, /F1 re-flagged as: \[F1\] hole is back via retry/);
+  assert.doesNotMatch(report, /Nothing else is open/);
+});
+
+test("a merged finding holds claimed fixes at every reviewer's location", () => {
+  const s = fresh();
+  afterBuild(s, done(), green, t);
+  afterReview(s, [codex([f("BLOCKER", "a", "a.js", 10), f("BLOCKER", "b", "a.js", 16)])], t);
+  afterBuild(s, done([{ id: "F1", status: "FIXED", where: "a.js:10" }, { id: "F2", status: "FIXED", where: "a.js:16" }]), green, t);
+  const grok = { reviewer: "grok", ok: true, verdict: "needs-attention", summary: "s", findings: [f("BLOCKER", "near b", "a.js", 13)] };
+  afterReview(s, [codex([f("BLOCKER", "[F1] a again", "a.js", 10)]), grok], t);
+  assert.notEqual(s.ledger.find((e) => e.id === "F2").status, "closed", "F2 is not accepted");
+});
+
+test("a breaker answer changed after a review is not counted as reviewed", () => {
+  const s = fresh({ breaker: true, maxMinutes: 10 });
+  afterBuild(s, done(), green, t);
+  afterBreak(s, [attack("first", "a.js", 10)], t);
+  afterBuild(s, done([{ id: "B1", status: "FIXED", where: "a.js:10" }]), green, t);
+  afterReview(s, [codex([f("CHANGES", "near the attack", "a.js", 11)])], t);
+  assert.equal(s.ledger.find((e) => e.id === "B1").status, "claimed_fixed", "held at a finding's place");
+  const next = afterBuild(s, done([{ id: "F1", status: "FIXED", where: "a.js:11" }, { id: "B1", status: "DISPUTED", note: "changed my mind" }]), green, { at, minutesElapsed: 11 });
+  assert.equal(next.gate, "G6");
+  assert.match(renderReport(s, { minutesElapsed: 11 }), /0 of these answers went through a later review pass, 1 did not/);
+});

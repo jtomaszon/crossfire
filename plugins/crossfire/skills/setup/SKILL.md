@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Check that crossfire's reviewers are installed, official and logged in - OpenAI Codex (required) and xAI Grok Build (optional) - and show the exact commands to fix whatever is missing. Use after installing crossfire, when a crossfire loop reports a reviewer is not usable, or when the user asks whether crossfire is ready.
+description: Use after installing crossfire, when a crossfire loop or review says a reviewer is not usable, or when asked whether crossfire is ready. Checks that OpenAI Codex (required) and xAI Grok Build (optional) are installed, official, logged in and able to run, and shows the exact commands to fix what is missing.
 ---
 
 # Crossfire setup

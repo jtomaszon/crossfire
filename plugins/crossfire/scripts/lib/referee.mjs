@@ -154,10 +154,13 @@ export function afterBuild(state, result, g0, { at, minutesElapsed }) {
   for (const fix of result.fixes ?? []) {
     const entry = state.ledger.find((e) => e.id === fix.id);
     if (!entry) continue;
-    entry.history.push({ at, round: state.round, builder: fix.status, note: fix.note ?? "", ...(fix.rule ? { rule: String(fix.rule).slice(0, 300) } : {}) });
+    entry.answeredPass = state.reviewPass;
+    delete entry.reflaggedPass;
+    entry.history.push({ at, round: state.round, builder: fix.status, note: fix.note ?? "", ...(fix.rule ? { rule: String(fix.rule).slice(0, 300) } : {}), ...(fix.where ? { where: String(fix.where).trim().slice(0, 300) } : {}) });
     if (fix.status === "FIXED") {
       entry.status = "claimed_fixed";
       entry.claimedRound = state.round;
+      entry.claimedPass = state.reviewPass;
     } else if (entry.severity === SEVERITY.NIT) {
       entry.status = "wontfix";
     } else if (entry.source === "breaker") {
@@ -210,9 +213,6 @@ export function afterBuild(state, result, g0, { at, minutesElapsed }) {
 export function afterBreak(state, attacks, { at, minutesElapsed }) {
   state.breakerRounds.push(state.round);
   log(state, at, "break-recorded", `round ${state.round}: ${attacks.length} proven attack(s)`);
-  if (overBudget(state, minutesElapsed)) {
-    return escalate(state, at, "G6", `wall-clock budget of ${state.maxMinutes} min spent`);
-  }
   for (const a of attacks) {
     state.ledger.push({
       id: nextId(state, "B"),
@@ -230,6 +230,10 @@ export function afterBreak(state, attacks, { at, minutesElapsed }) {
       history: [],
     });
   }
+  // The budget is checked after the attacks are in the ledger, so an escalation reports them.
+  if (overBudget(state, minutesElapsed)) {
+    return escalate(state, at, "G6", `wall-clock budget of ${state.maxMinutes} min spent`);
+  }
   if (attacks.length) {
     state.phase = "harden";
     return sendBuilder(state, at, "harden");
@@ -243,28 +247,48 @@ export function afterBreak(state, attacks, { at, minutesElapsed }) {
 /**
  * Compare a re-check with an earlier check of the same PR. Earlier findings are
  * tagged P1..Pn in the reviewers' focus; a reviewer that still sees one reports it
- * again with its tag. Untagged findings at the same place also count as still open.
+ * again, its title starting with the tag. Only that counts as still open. An untagged
+ * finding near earlier ones (any severity) is new, "near Pn", and every earlier finding
+ * it is near is unclear. Fixed means re-flagged by nobody and near nothing.
  */
 export function compareWithPrevious(previous, current) {
+  // Still open needs the reviewer's own tag ([Pn]). A new finding near an earlier one is
+  // reported as new, "near Pn", and that earlier finding as unclear: neither is guessed.
   const stillOpen = [];
   const fresh = [];
-  const seen = new Set();
+  const tagged = new Set();
+  const near = new Set();
   for (const f of current) {
-    const tag = /\[P(\d+)\]/.exec(f.title ?? "")?.[1];
-    const byTag = tag ? previous[Number(tag) - 1] : null;
-    const byPlace = byTag ? null : previous.find((p, i) => !seen.has(i) && p.severity === f.severity && overlaps(p, f));
-    const match = byTag ?? byPlace;
-    if (match) {
-      const i = previous.indexOf(match);
-      if (!seen.has(i)) stillOpen.push({ previous: { index: i + 1, ...match }, now: f, how: byTag ? "re-flagged" : "same place" });
-      seen.add(i);
-    } else fresh.push(f);
+    const close = previous.flatMap((p, j) => (sameplace(p, f) ? [j] : []));
+    const idx = [...new Set(titlesOf(f).map((t) => /^\s*\[P(\d+)\]/.exec(t)?.[1]).filter(Boolean).map((n) => Number(n) - 1))].filter((i) => i >= 0 && i < previous.length);
+    if (idx.length) {
+      for (const i of idx) {
+        if (!tagged.has(i)) stillOpen.push({ previous: { index: i + 1, ...previous[i] }, now: f, how: "re-flagged" });
+        tagged.add(i);
+      }
+      for (const j of close) near.add(j);
+      continue;
+    }
+    for (const j of close) near.add(j);
+    fresh.push(close.length ? { ...f, nearPrevious: close.map((j) => j + 1) } : f);
   }
-  const resolved = previous.map((p, i) => ({ index: i + 1, ...p })).filter((p) => !seen.has(p.index - 1));
-  return { resolved, stillOpen, fresh };
+  const indexed = previous.map((p, i) => ({ index: i + 1, ...p }));
+  const unclear = indexed.filter((p) => !tagged.has(p.index - 1) && near.has(p.index - 1));
+  const resolved = indexed.filter((p) => !tagged.has(p.index - 1) && !near.has(p.index - 1));
+  return { resolved, stillOpen, unclear, fresh };
 }
 
 const TAG_RE = /\[(F\d+)\]/;
+
+/** Every title a merged finding carries: one per reviewer that reported it. */
+function titlesOf(f) {
+  return [f.title, ...(f.alsoTitles ?? [])].filter((t) => typeof t === "string");
+}
+
+/** Does a ledger entry or earlier finding sit at any place a (merged) finding was reported? */
+function sameplace(e, f) {
+  return [f, ...(f.alsoAt ?? [])].some((place) => overlaps(e, place));
+}
 const LINE_SLACK = 3;
 
 function overlaps(a, b) {
@@ -285,6 +309,8 @@ export function mergeFindings(reviews) {
       const twin = merged.find((m) => m.severity === f.severity && overlaps(m, f) && !m.reviewers.includes(review.reviewer));
       if (twin) {
         twin.reviewers.push(review.reviewer);
+        if (f.title && f.title !== twin.title) (twin.alsoTitles ??= []).push(f.title);
+        (twin.alsoAt ??= []).push({ file: f.file, lineStart: f.lineStart, lineEnd: f.lineEnd });
         continue;
       }
       merged.push({ ...f, reviewers: [review.reviewer] });
@@ -328,18 +354,27 @@ export function afterReview(state, reviews, { at, minutesElapsed }) {
   const reflagged = new Set();
 
   for (const f of findings) {
-    const tag = TAG_RE.exec(f.title ?? "")?.[1];
-    const tagged = tag ? state.ledger.find((e) => e.id === tag) : null;
-    if (tagged) {
-      reflagged.add(tagged.id);
-      if (tagged.status === "wontfix" && f.severity === SEVERITY.NIT) continue;
-      escalations.push(["G3", `${tagged.id} re-flagged after the builder answered it (${tagged.status}): ${tagged.title}`]);
+    // A claimed fix or a dispute at the place of any finding is not accepted this pass.
+    const atPlace = state.ledger.filter((e) => (e.status === "claimed_fixed" || e.status === "disputed_internal") && sameplace(e, f));
+    for (const e of atPlace) reflagged.add(e.id);
+    const tags = [...new Set(titlesOf(f).map((t) => TAG_RE.exec(t)?.[1]).filter(Boolean))];
+    const taggedEntries = tags.map((id) => state.ledger.find((e) => e.id === id)).filter(Boolean);
+    if (taggedEntries.length) {
+      for (const tagged of taggedEntries) {
+        reflagged.add(tagged.id);
+        if (tagged.status === "wontfix" && f.severity === SEVERITY.NIT) continue;
+        tagged.history.push({ at, pass: state.reviewPass, reflagged: f.title, body: String(f.body ?? "").slice(0, 2000), where: f.file ? `${f.file}:${f.lineStart ?? ""}` : undefined, reviewers: f.reviewers });
+        const was = tagged.status;
+        if (was === "closed") tagged.status = "open"; // a reviewer says it is not resolved
+        escalations.push(["G3", `${tagged.id} re-flagged after the builder answered it (${was}): ${f.title}`]);
+      }
       continue;
     }
-    const suspect = state.ledger.find((e) => e.status === "claimed_fixed" && e.source !== "breaker" && overlaps(e, f));
-    if (suspect) {
-      reflagged.add(suspect.id);
-      escalations.push(["G4", `new ${f.severity} at ${f.file}:${f.lineStart} overlaps ${suspect.id}, claimed fixed: ${f.title}`]);
+    // Breaker entries are internal: a reviewer finding at their place is a new finding, not G4.
+    const suspects = atPlace.filter((e) => e.status === "claimed_fixed" && e.source !== "breaker");
+    if (suspects.length) {
+      for (const s of suspects) escalations.push(["G4", `new ${f.severity} at ${f.file}:${f.lineStart} overlaps ${s.id}, claimed fixed: ${f.title}`]);
+      fresh.push(f); // recorded as open, so the owner sees it
       continue;
     }
     fresh.push(f);
@@ -354,6 +389,7 @@ export function afterReview(state, reviews, { at, minutesElapsed }) {
       e.status = "closed";
       e.closedPass = state.reviewPass;
     }
+    if (reflagged.has(e.id)) e.reflaggedPass = state.reviewPass;
   }
 
   for (const f of fresh) {
