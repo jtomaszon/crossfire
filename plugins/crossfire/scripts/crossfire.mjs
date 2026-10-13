@@ -901,26 +901,46 @@ function report(ctx, opts) {
 }
 
 /**
- * CI for one commit: its check runs (GitHub Actions and apps) and its commit statuses (older
- * integrations), counted as pass, fail, pending and skipping. { counts } or { error }.
+ * CI for one commit: its check runs (GitHub Actions and apps, latest per name) and its commit
+ * statuses (older integrations), plus required checks the PR still expects. Counted as pass,
+ * fail, pending and skipping. { counts } or { error } (anything incomplete or unrecognised).
  */
-function ciForCommit(target, sha, cwd) {
+function ciForCommit(target, sha, cwd, expected = []) {
   const api = (endpoint, jq) => run(W.ghBin(), W.ghArgs(target.gh, ["api", endpoint, "--paginate", "--jq", jq]), { cwd, timeoutMs: 30_000 });
-  const lines = (r) => r.stdout.split("\n").filter(Boolean).map((l) => JSON.parse(l));
-  const runs = api(`repos/${target.nwo}/commits/${sha}/check-runs?per_page=100`, ".check_runs[] | {name, status, conclusion}");
-  if (runs.status !== 0) return { error: (runs.stderr || `exit ${runs.status}`).trim().split("\n")[0] };
-  const statuses = api(`repos/${target.nwo}/commits/${sha}/status?per_page=100`, ".statuses[] | {name: .context, state}");
-  if (statuses.status !== 0) return { error: (statuses.stderr || `exit ${statuses.status}`).trim().split("\n")[0] };
-  let items;
+  const pages = (r) => r.stdout.split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  const fail = (r) => ({ error: (r.stderr || `exit ${r.status}`).trim().split("\n")[0] });
+  const runsR = api(`repos/${target.nwo}/commits/${sha}/check-runs?filter=latest&per_page=100`, "{total: .total_count, rows: [.check_runs[] | {name, status, conclusion}]}");
+  if (runsR.status !== 0) return fail(runsR);
+  const statR = api(`repos/${target.nwo}/commits/${sha}/status?per_page=100`, "{total: .total_count, rows: [.statuses[] | {name: .context, state}]}");
+  if (statR.status !== 0) return fail(statR);
+  let runs;
+  let stats;
   try {
-    items = [
-      ...lines(runs).map((r) => (r.status !== "completed" ? "pending" : r.conclusion === "success" ? "pass" : ["neutral", "skipped"].includes(r.conclusion) ? "skipping" : r.conclusion === "stale" ? "pending" : "fail")),
-      ...lines(statuses).map((x) => (x.state === "success" ? "pass" : x.state === "pending" ? "pending" : "fail")),
-    ];
+    runs = pages(runsR);
+    stats = pages(statR);
   } catch {
     return { error: "gh returned something that is not JSON" };
   }
-  const n = (b) => items.filter((x) => x === b).length;
+  const rows = (ps) => ps.flatMap((p) => p.rows ?? []);
+  const complete = (ps) => ps.length > 0 && rows(ps).length === Number(ps[0].total ?? -1);
+  if (!complete(runs) || !complete(stats)) return { error: "GitHub returned fewer checks than it counts; the list is incomplete" };
+  const items = [];
+  for (const r of rows(runs)) {
+    if (r.status !== "completed" || r.conclusion === "stale") items.push(["run", r.name, "pending"]);
+    else if (r.conclusion === "success") items.push(["run", r.name, "pass"]);
+    else if (["neutral", "skipped"].includes(r.conclusion)) items.push(["run", r.name, "skipping"]);
+    else if (["failure", "timed_out", "action_required", "cancelled", "startup_failure"].includes(r.conclusion)) items.push(["run", r.name, "fail"]);
+    else return { error: `check ${r.name} finished with an outcome crossfire does not know (${r.conclusion})` };
+  }
+  for (const x of rows(stats)) {
+    if (x.state === "success") items.push(["status", x.name, "pass"]);
+    else if (x.state === "pending") items.push(["status", x.name, "pending"]);
+    else if (["failure", "error"].includes(x.state)) items.push(["status", x.name, "fail"]);
+    else return { error: `status ${x.name} has a state crossfire does not know (${x.state})` };
+  }
+  // Required checks that have not reported yet do not exist on the commit: count them as pending.
+  for (const name of expected) if (!items.some(([, n]) => n === name)) items.push(["expected", name, "pending"]);
+  const n = (b) => items.filter(([, , x]) => x === b).length;
   return { counts: { total: items.length, pass: n("pass"), fail: n("fail"), pending: n("pending"), skipping: n("skipping") } };
 }
 
@@ -1019,21 +1039,29 @@ function ladder(ctx, opts) {
     } else {
       const extra = pr.headRefOid === shipHead ? "head is the shipped commit" : `head ${short(pr.headRefOid)} has commits on top of the shipped commit that this loop did not review`;
       rungs.push(`2. PR:      #${pr.number} ${pr.state.toLowerCase()}${pr.isDraft ? " (draft)" : ""}${pr.isCrossRepository ? " (from a fork)" : ""} into ${pr.baseRefName ?? "?"} ${pr.url}; ${extra}${othersMerged.length ? `; also merged: ${othersMerged.map((p) => `#${p.number} into ${p.baseRefName}`).join(", ")}` : ""}${truncated}`);
-      // CI is read for the validated head commit itself (check runs and commit statuses), so it
-      // cannot belong to another head. The PR is read back once more for its latest state.
-      const ci = ciForCommit(target, pr.headRefOid, state.repo);
-      const v = run(W.ghBin(), W.ghArgs(target.gh, ["pr", "view", String(pr.number), "--json", "headRefOid,state"]), { cwd: state.repo, timeoutMs: 30_000 });
+      // The PR is read back (head, state, and required checks it still expects), then CI is read
+      // for that exact commit. CI is reported only when the read-back head is the validated one.
+      const v = run(W.ghBin(), W.ghArgs(target.gh, ["pr", "view", String(pr.number), "--json", "headRefOid,state,statusCheckRollup"]), { cwd: state.repo, timeoutMs: 30_000 });
       let after = null;
       try {
-        after = JSON.parse(v.stdout || "null");
+        after = v.status === 0 ? JSON.parse(v.stdout || "null") : null;
       } catch {
         after = null;
       }
-      if (ci.error) rungs.push(`3. CI:      unknown (gh: ${ci.error})`);
-      else {
-        data.ci = { ...ci.counts, head: pr.headRefOid };
-        const c = ci.counts;
-        rungs.push(`3. CI:      ${c.total ? `${c.pass} passed, ${c.fail} failed, ${c.pending} pending${c.skipping ? `, ${c.skipping} skipped` : ""}` : "no checks reported yet"} (on ${short(pr.headRefOid)})${after && after.headRefOid !== pr.headRefOid ? `; the PR's head has since moved to ${short(after.headRefOid)}: run the ladder again for its CI` : ""}`);
+      if (!after || typeof after !== "object") {
+        rungs.push(`3. CI:      unknown (could not read PR #${pr.number} back: ${(v.stderr || `exit ${v.status}`).trim().split("\n")[0]})`);
+      } else if (after.headRefOid !== pr.headRefOid) {
+        data.headNow = after.headRefOid;
+        rungs.push(`3. CI:      unknown (the PR's head moved to ${short(after.headRefOid)} while the ladder read it: run it again)`);
+      } else {
+        const expected = (Array.isArray(after.statusCheckRollup) ? after.statusCheckRollup : []).filter((c) => c?.state === "EXPECTED").map((c) => c.context ?? c.name).filter(Boolean);
+        const ci = ciForCommit(target, pr.headRefOid, state.repo, expected);
+        if (ci.error) rungs.push(`3. CI:      unknown (${ci.error})`);
+        else {
+          data.ci = { ...ci.counts, head: pr.headRefOid };
+          const c = ci.counts;
+          rungs.push(`3. CI:      ${c.total ? `${c.pass} passed, ${c.fail} failed, ${c.pending} pending${c.skipping ? `, ${c.skipping} skipped` : ""}` : "no checks reported yet"} (on ${short(pr.headRefOid)})`);
+        }
       }
       // The state read back last is the newest; if it is missing, merged is unknown unless another PR settles it.
       const nowState = after && after.headRefOid === pr.headRefOid ? after.state : null;

@@ -1116,11 +1116,31 @@ test("ladder: after SHIP it reports pushed, PR, CI and merged as facts, and neve
   const ciCalls = fs.readFileSync(`${d}/calls.log`, "utf8").split("\n").filter((l) => l.includes("check-runs") || l.includes("/status"));
   assert.ok(ciCalls.length >= 2 && ciCalls.every((l) => l.includes(`/commits/${head}/`)), "CI is read for the shipped commit itself");
 
-  // The PR head moves while the ladder reads it: CI stays tied to the commit it read, and says so.
+  // A required check that has not reported yet is pending, not missing.
+  fs.writeFileSync(`${d}/rollup.json`, JSON.stringify([{ __typename: "StatusContext", context: "required/e2e", state: "EXPECTED" }]));
+  assert.match(ladder().stdout, /3\. CI: +1 passed, 1 failed, 2 pending, 1 skipped/);
+  fs.rmSync(`${d}/rollup.json`);
+
+  // An incomplete list, an unknown outcome, or a PR that cannot be read back: CI unknown.
+  fs.writeFileSync(`${d}/check-runs-total`, "250");
+  assert.match(ladder().stdout, /3\. CI: +unknown \(GitHub returned fewer checks than it counts/);
+  fs.rmSync(`${d}/check-runs-total`);
+  fs.writeFileSync(`${d}/check-runs.jsonl`, jsonl([{ name: "odd", status: "completed", conclusion: "something_new" }]));
+  assert.match(ladder().stdout, /3\. CI: +unknown \(check odd finished with an outcome crossfire does not know/);
+  fs.writeFileSync(`${d}/view-fail`, "");
+  r = sb.cf("ladder", "--slug", "demo", "--repo", "acme/app", "--json");
+  assert.equal(r.json().ci, null, "no CI counts when the PR cannot be read back");
+  fs.rmSync(`${d}/view-fail`);
+
+  // The PR head moves while the ladder reads it: CI unknown, and --json says where it went.
   fs.writeFileSync(`${d}/moved-head`, "2".repeat(40));
-  assert.match(ladder().stdout, /\(on [0-9a-f]{12}\); the PR's head has since moved to 222222222222/);
+  assert.match(ladder().stdout, /3\. CI: +unknown \(the PR's head moved to 222222222222/);
+  const j = sb.cf("ladder", "--slug", "demo", "--repo", "acme/app", "--json").json();
+  assert.equal(j.ci, null);
+  assert.equal(j.headNow, "2".repeat(40));
   fs.rmSync(`${d}/moved-head`);
   fs.rmSync(`${d}/statuses.jsonl`);
+  fs.rmSync(`${d}/check-runs.jsonl`);
 
   // Merged into the loop's base; GitHub then deletes the branch: still merged.
   fs.writeFileSync(`${d}/prs.json`, JSON.stringify([pr({ state: "MERGED" })]));
