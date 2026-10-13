@@ -54,7 +54,7 @@ export const OFFICIAL = Object.freeze({
     minVersion: "0.2.0",
     required: false,
     install: [
-      "install the Grok Build CLI from xAI (needs a SuperGrok Heavy subscription) and log in, so `grok models` works",
+      "install the Grok Build CLI from xAI and log in, so `grok models` works (Grok Build needs an xAI plan that includes the Grok Build CLI; on a free plan it stops after a review or two (usage limit))",
       "claude plugin marketplace add xai-org/grok-build-plugin-cc",
       "claude plugin install grok-build@xai-grok-build",
     ],

@@ -16,7 +16,7 @@ import { appendLessons, lessonsBlock, lessonsFromCheck, lessonsFromLoop, memoryF
 import { classifyProofFailure, grokSocketHint, readHealth, recordAttempt, summarize } from "./lib/health.mjs";
 import { CrossfireError, EXIT, atomicWriteJson, minutesBetween, nowIso, readJsonFile, run, runShell, tail, writeText } from "./lib/util.mjs";
 
-const VERSION = "1.0.0";
+const VERSION = "1.0.1";
 
 const USAGE = `crossfire ${VERSION}: referee for a spec-first build -> review -> fix loop
 
@@ -509,15 +509,20 @@ function check(ctx, opts) {
   const timeoutMs = intOpt(opts, "timeout-min", 20, 1, 120) * 60 * 1000;
 
   const results = reviewers.map((p) => {
-    const r = runReviewer(p, { cwd: repo, base: baseSha, focus, timeoutMs });
-    recordAttempt(r.reviewer, { ok: r.ok, at, seconds: r.seconds, error: r.error });
-    atomicWriteJson(path.join(dir, `review-${p.key}.json`), r);
-    return r;
+    return runReviewer(p, { cwd: repo, base: baseSha, focus, timeoutMs });
   });
   const reviewerRuns = results.map((r) => ({ pass: 1, reviewer: r.reviewer, ok: r.ok, seconds: r.seconds, verdict: r.verdict ?? null, findings: r.ok ? r.findings.length : null, error: r.ok ? null : String(r.error).split("\n")[0].slice(0, 300) }));
   if (grok !== "off" && !usable(plugins.grok)) reviewerRuns.push({ pass: 1, reviewer: "grok", ok: false, skipped: true, error: plugins.grok.problems[0] ?? "not installed" });
   const reviewersText = reviewersLine({ reviewPass: 1, reviewerRuns });
 
+  if (git.head(repo) !== head) {
+    out(ctx, `CHECK ${id}: the branch moved while the reviewers were reading it (${head.slice(0, 12)} -> ${String(git.head(repo)).slice(0, 12)}); nothing was recorded. Run crossfire check again.`, { id, discarded: true });
+    return EXIT.MALFORMED;
+  }
+  for (const r of results) {
+    recordAttempt(r.reviewer, { ok: r.ok, at, seconds: r.seconds, error: r.error });
+    atomicWriteJson(path.join(dir, `review-${r.reviewer}.json`), r);
+  }
   const codex = results.find((r) => r.reviewer === "codex");
   if (!codex.ok) {
     out(ctx, [`CHECK ${id}: the Codex review failed: ${codex.error}`, "Nothing was recorded as a review. Run crossfire check again; if it keeps failing, run crossfire doctor."].join("\n"), { id, error: codex.error });
@@ -732,12 +737,15 @@ function attacked(ctx, opts) {
     }
     const dirty = git.dirtyPaths(state.repo);
     if (dirty.length) problems.push(`the breaker changed the working tree (${dirty[0]}...); it must only use a throwaway worktree. Restore the tree before continuing.`);
-    if (state.lastBuildHead && git.head(state.repo) !== state.lastBuildHead) problems.push(`HEAD moved from the builder's commit ${state.lastBuildHead.slice(0, 12)}; the breaker must not commit`);
+    const headMoved = Boolean(state.lastBuildHead && git.head(state.repo) !== state.lastBuildHead);
+    if (headMoved) problems.push(`HEAD moved from the builder's commit ${state.lastBuildHead.slice(0, 12)}; the breaker must not commit. Restore the branch to that commit before continuing.`);
 
     if (problems.length) {
       state.breakerMalformed = (state.breakerMalformed ?? 0) + 1;
       state.history.push({ at, event: "breaker-malformed", detail: problems.join("; ") });
-      if (state.breakerMalformed < 2 || dirty.length) {
+      // An integrity breach (a changed tree or HEAD) never falls through to the
+      // "skip the breaker" fallback: the branch must be restored first, every time.
+      if (state.breakerMalformed < 2 || dirty.length || headMoved) {
         saveState(dir, state);
         out(ctx, [statusLine(state, minutesBetween(state.startedAt)), "MALFORMED: the breaker's result was not accepted (nothing advanced).", ...problems.map((p) => `- ${p}`), `RE-ASK: send the breaker back to ${files.breakerBrief(dir, state.round)} with the problems above, then run crossfire attacked --slug ${state.slug} again.`].join("\n"), { malformed: true, problems });
         return EXIT.MALFORMED;
@@ -777,6 +785,9 @@ function proof(ctx, opts) {
   return withLock(dir, () => {
     const state = loadState(dir);
     if (isTerminal(state)) throw new CrossfireError(`loop ${state.slug} already ${state.phase}`, EXIT.TERMINAL);
+    if (state.next?.action !== ACTIONS.SEND_BUILDER) {
+      throw new CrossfireError(`proof commands can change only while the builder is next (this loop is waiting for ${state.next?.action}), so the new commands run on the next crossfire built before any review.`);
+    }
     const before = [...state.e2e, ...state.invariants].join(" ; ");
     state.e2e = opts.e2e;
     state.invariants = opts.invariant;
@@ -797,6 +808,9 @@ function review(ctx, opts) {
     requireNext(state, ACTIONS.RUN_REVIEW);
     const dirty = git.dirtyPaths(state.repo);
     if (dirty.length) throw new CrossfireError(`the working tree has uncommitted changes (${dirty[0]}...); reviewers only see commits. Commit or stash, then run review again.`);
+    if (state.lastBuildHead && git.head(state.repo) !== state.lastBuildHead) {
+      throw new CrossfireError(`HEAD is not the commit the proof commands verified (${state.lastBuildHead.slice(0, 12)}); only a verified commit is reviewed. Restore the branch to it, or record a new builder round first.`);
+    }
 
     const plugins = locatePlugins();
     if (!usable(plugins.codex)) {
@@ -811,14 +825,19 @@ function review(ctx, opts) {
     const pass = state.reviewPass + 1;
     const focus = buildFocus(state, { specText: readSpec(state.spec) });
     const at = nowIso();
-    const results = reviewers.map((p) => {
-      const r = runReviewer(p, { cwd: state.repo, base: state.baseSha, focus, timeoutMs });
-      atomicWriteJson(files.review(dir, pass, p.key), r);
-      return r;
-    });
+    const results = reviewers.map((p) => runReviewer(p, { cwd: state.repo, base: state.baseSha, focus, timeoutMs }));
 
+    // Reviewers read the live checkout: if HEAD moved meanwhile, they may have read another
+    // commit. Discard them before anything is recorded; nothing advances.
+    if (state.lastBuildHead && git.head(state.repo) !== state.lastBuildHead) {
+      state.history.push({ at, event: "review-discarded", detail: "HEAD moved during the review" });
+      saveState(dir, state);
+      out(ctx, [statusLine(state, minutesBetween(state.startedAt)), `DISCARDED: HEAD moved while the reviewers were reading the branch (verified ${state.lastBuildHead.slice(0, 12)}, now ${String(git.head(state.repo)).slice(0, 12)}); their verdicts are not recorded. Restore the branch to the verified commit and run review again.`].join("\n"), { discarded: true });
+      return EXIT.MALFORMED;
+    }
     state.reviewerRuns ??= [];
     for (const r of results) {
+      atomicWriteJson(files.review(dir, pass, r.reviewer), r);
       recordAttempt(r.reviewer, { ok: r.ok, at, seconds: r.seconds, error: r.error });
       state.reviewerRuns.push({ pass, reviewer: r.reviewer, ok: r.ok, seconds: r.seconds, verdict: r.verdict ?? null, findings: r.ok ? r.findings.length : null, error: r.ok ? null : String(r.error).split("\n")[0].slice(0, 300) });
     }

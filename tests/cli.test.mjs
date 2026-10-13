@@ -910,3 +910,82 @@ test("watch prints a long comment in full: what is acknowledged was seen", async
   const r = await runAsync(sb, ["watch", "--pr", "7", "--interval-sec", "1", "--timeout-sec", "5"]);
   assert.match(r.stdout, /THE ACTUAL REQUEST AT THE END/);
 });
+
+test("a breaker that commits is refused every time: HEAD drift never falls through to review", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  let next = init(sb, "--breaker", "on");
+  sb.build(next.resultFile);
+  next = sb.cf("built", "--slug", "demo", "--json").json();
+  // The breaker commits in the real checkout and leaves the tree clean.
+  fs.writeFileSync(`${sb.repo}/breaker-was-here.txt`, "x");
+  spawnSync("git", ["-c", "user.name=B", "-c", "user.email=b@example.com", "add", "-A"], { cwd: sb.repo });
+  spawnSync("git", ["-c", "user.name=B", "-c", "user.email=b@example.com", "commit", "-qm", "breaker commit"], { cwd: sb.repo });
+  fs.writeFileSync(next.resultFile, JSON.stringify({ status: "DONE", summary: "", attacks: [] }));
+  for (let i = 0; i < 3; i += 1) {
+    const r = sb.cf("attacked", "--slug", "demo");
+    assert.equal(r.status, 3, `attempt ${i + 1}: still refused`);
+    assert.match(r.stdout, /HEAD moved from the builder's commit/);
+  }
+  assert.equal(sb.cf("status", "--slug", "demo", "--json").json().next.action, "SEND_BREAKER", "never advanced to review");
+});
+
+test("review refuses a HEAD that the proof commands did not verify", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  const next = init(sb);
+  sb.build(next.resultFile);
+  sb.cf("built", "--slug", "demo");
+  fs.writeFileSync(`${sb.repo}/late.txt`, "x");
+  spawnSync("git", ["-c", "user.name=B", "-c", "user.email=b@example.com", "add", "-A"], { cwd: sb.repo });
+  spawnSync("git", ["-c", "user.name=B", "-c", "user.email=b@example.com", "commit", "-qm", "unverified"], { cwd: sb.repo });
+  const r = sb.cf("review", "--slug", "demo");
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /HEAD is not the commit the proof commands verified/);
+  assert.equal(sb.calls("codex").filter((a) => a[0] === "adversarial-review").length, 0, "no reviewer ran");
+});
+
+test("reviews read the live checkout: if HEAD moves during a review, the verdicts are discarded (review and check)", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  const next = init(sb);
+  sb.build(next.resultFile);
+  sb.cf("built", "--slug", "demo");
+  sb.queue("codex", approve);
+  sb.queue("grok", approve);
+  sb.env.FAKE_REVIEW_COMMIT_IN = sb.repo;
+  const r = sb.cf("review", "--slug", "demo");
+  assert.equal(r.status, 3);
+  assert.match(r.stdout, /DISCARDED: HEAD moved while the reviewers were reading/);
+  const st = sb.cf("status", "--slug", "demo", "--json").json();
+  assert.equal(st.next.action, "RUN_REVIEW", "nothing advanced");
+  const runDir = `${sb.repo}/.crossfire/runs/demo`;
+  assert.deepEqual(fs.readdirSync(runDir).filter((f) => f.startsWith("review-")), [], "no review files written");
+  assert.deepEqual(JSON.parse(fs.readFileSync(`${runDir}/state.json`, "utf8")).reviewerRuns ?? [], [], "no reviewer runs recorded");
+  sb.queue("codex", approve);
+  sb.queue("grok", approve);
+  const c = sb.cf("check", "--base", "main", "--name", "moving");
+  assert.equal(c.status, 3);
+  assert.match(c.stdout, /the branch moved while the reviewers were reading it/);
+  assert.ok(!fs.existsSync(`${sb.repo}/.crossfire/checks/moving/check.json`), "no check recorded");
+  assert.ok(!fs.existsSync(`${sb.repo}/.crossfire/checks/moving/review-codex.json`), "no review file kept");
+  // Back on the verified commit, the next pass counts once.
+  delete sb.env.FAKE_REVIEW_COMMIT_IN;
+  spawnSync("git", ["reset", "-q", "--hard", JSON.parse(fs.readFileSync(`${runDir}/state.json`, "utf8")).lastBuildHead], { cwd: sb.repo });
+  sb.queue("codex", approve);
+  sb.queue("grok", approve);
+  const ok = sb.cf("review", "--slug", "demo");
+  assert.equal(ok.status, 0, ok.stdout + ok.stderr);
+  assert.match(ok.stdout, /REVIEWERS: codex 1\/1 passes, grok 1\/1 passes/);
+});
+
+test("proof commands can change only while the builder is next", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  const next = init(sb);
+  sb.build(next.resultFile);
+  sb.cf("built", "--slug", "demo");
+  const r = sb.cf("proof", "--slug", "demo", "--e2e", "true");
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /only while the builder is next/);
+});

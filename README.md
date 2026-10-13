@@ -6,7 +6,7 @@ A Claude Code plugin that runs a change through a **spec-first build → review 
 - **Other vendors review.** **OpenAI Codex reviews every round (required).** **xAI Grok Build adds a second, independent review** when it is installed. Both run read-only, through their vendors' own official Claude Code plugins.
 - **A referee decides.** The `crossfire` script, not the model, decides every next step and stops the loop at hard gates: round cap, a finding that keeps coming back, a regression, a time budget. You hear about it only when it ships or when it needs your call.
 
-It pairs with [superpowers](https://github.com/obra/superpowers): superpowers brings the habits (brainstorming, plans, red/green TDD, worktrees, debugging), crossfire brings the independent reviewers and the referee. The design is ported from the JARVIS builder-reviewer loop, including the gates and the lessons that produced them.
+It pairs with [superpowers](https://github.com/obra/superpowers): superpowers brings the habits (brainstorming, plans, red/green TDD, worktrees, debugging), crossfire brings the independent reviewers and the referee. The gates come from JARVIS, the author's earlier private builder-reviewer agent setup; the lessons behind each gate are in the [CHANGELOG](CHANGELOG.md).
 
 > **Status: experimental.** Used daily by its author; expect rough edges. Known issues are listed below.
 
@@ -27,34 +27,33 @@ claude plugin marketplace add jtomaszon/crossfire
 claude plugin install crossfire@jtomaszon    # also installs codex@openai-codex and superpowers
 ```
 
-While the repository is private, add the marketplace by its SSH address instead (your GitHub SSH key must have access): `claude plugin marketplace add git@github.com:jtomaszon/crossfire.git`.
+Requirements: Claude Code with plugin dependencies support (step 3 relies on it to install Codex's plugin and superpowers), Node.js 18.18+, git.
 
 Then, in Claude Code: `/reload-plugins` and `/crossfire:setup`. It must say **READY**.
 
-**Optional, recommended: Grok Build as a second reviewer.** Install xAI's Grok Build CLI and log in (`grok models` must work; Grok Build needs an xAI subscription that includes it), then:
+**Optional, recommended: Grok Build as a second reviewer.** Install xAI's Grok Build CLI and log in (`grok models` must work; Grok Build needs an xAI plan that includes the Grok Build CLI; on a free plan it stops after a review or two (usage limit)), then:
 
 ```bash
 claude plugin marketplace add xai-org/grok-build-plugin-cc
 claude plugin install grok-build@xai-grok-build
 ```
 
-Requirements: Claude Code with plugin dependencies support, Node.js 18.18+, git.
+### What leaves your machine
 
-### Moving from the old `scaledb-crossfire` marketplace
+Crossfire itself has no telemetry. The tools it drives send data under their own terms:
 
-Versions up to 0.7.0 were installed as `crossfire@scaledb-crossfire`. To switch to 1.0.0:
+- **OpenAI (Codex) and, when usable, xAI (Grok Build),** on every loop review pass and every `crossfire check` (including `/crossfire:review`): crossfire's focus text (in a loop, the spec inline up to 12,000 characters plus its path, earlier findings and the builder's answers; in a check, the `--focus` text, which `/crossfire:review` fills with the PR description and earlier review comments, plus any `--spec` file inline up to 12,000 characters and, with `--since`, the earlier check's findings), and their agent reads the branch diff and whatever repository files it chooses, read-only. Grok is used whenever it is usable unless you pass `--grok off`.
+- **Anthropic (Claude Code):** the orchestrator, the builder and the breaker are ordinary Claude Code sessions; they read the spec, the plan, the briefs and the repository's memory, and `crossfire watch` prints PR comment bodies in full into the session.
+- **GitHub:** `crossfire watch` and `/crossfire:review` read the PR's state, comments and reviews through `gh`.
 
-```bash
-# remove the old one
-claude plugin uninstall crossfire@scaledb-crossfire
-claude plugin marketplace remove scaledb-crossfire
+Kept out of git (through `.git/info/exclude`) and stored only on your machine: `.crossfire/` (specs, plans, loop runs, checks, the watcher's inbox), `.git/crossfire/memory.md`, and `~/.local/state/crossfire/reviewers.json` (one-line reviewer errors). "Out of git" is not "never sent": parts of these reach the tools above as described. See [SECURITY.md](SECURITY.md).
 
-# install the new one (SSH address while the repository is private)
-claude plugin marketplace add git@github.com:jtomaszon/crossfire.git
-claude plugin install crossfire@jtomaszon
-```
+### What crossfire will never do
 
-Codex, Grok Build and superpowers stay installed; nothing else changes. Then `/reload-plugins` (or a new session) and `/crossfire:setup`. Your loops, checks and memory carry over: they live in each repository (`.crossfire/` and `.git/crossfire/`), not in the plugin.
+- The `crossfire` script never pushes, merges, rebases onto another branch, force-pushes, deletes branches, posts to GitHub, installs tools or logs in for you. The Claude session driving it (the orchestrator) may open a PR, push, merge or post only when you ask it to.
+- Let the breaker change your branch: it proves attacks in a throwaway worktree, and crossfire refuses its result, every time, while the working tree or HEAD differs from the builder's commit. In a loop, a review starts only on the commit the builder's last round recorded and its proof commands passed on (a loop without proof commands reviews it unproven), and verdicts are discarded if HEAD moved while the reviewers read the live checkout; do not change the checkout during a review. `crossfire check` runs no proof commands: it reviews the branch as it is, with the same HEAD comparison.
+- Let a reviewer write: Codex and Grok run read-only.
+- Guess: when something is ambiguous, the referee escalates to you instead of looping again.
 
 ### Codex and Grok on Linux
 
@@ -72,7 +71,12 @@ In a git repository, ask Claude for a change and say "crossfire", or run `/cross
 1. Check the reviewers (`crossfire doctor`).
 2. Gather context and plan through superpowers: `brainstorming` explores the repository (its docs for the area, existing patterns, callers; for someone else's PR, the PR conversation), then `writing-plans` writes a plan for a zero-context engineer with a **Review Focus** of likely failure modes. Crossfire adds this repository's **memory**: the kinds of problems reviewers found here before. Spec and plan stay out of git. **You approve them**; after that the loop runs on its own.
 3. Make a branch or worktree and `crossfire init`.
-4. Loop: builder round → crossfire runs the proof commands itself (G0) → an internal **breaker** subagent tries to break the change, proving each attack with a failing test, and the builder hardens → Codex (and Grok) review → valid findings go straight back to the builder → ...
+4. Loop, every round:
+   1. The builder implements and commits.
+   2. Crossfire runs the proof commands itself (G0).
+   3. The internal **breaker** tries to break the change and proves each attack with a failing test; proven attacks go back to the builder once (harden).
+   4. Codex (and Grok) review the branch.
+   5. Valid findings go straight back to the builder for the next round; the gates below decide when it stops.
 5. Stop on **SHIP** (report of what was found and fixed) or **ESCALATE** (the gate, the reason, the open findings, and your options). It never pushes or merges unless you ask.
 
 ## Review a PR without building anything
