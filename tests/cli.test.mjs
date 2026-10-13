@@ -350,7 +350,7 @@ test("B: full loop with the breaker: attack proven, hardened, reviewers see it, 
   assert.match(sb.calls("codex").at(-1).at(-1), /internal adversarial pass[\s\S]*a second writer overwrites v2 -> builder: FIXED/);
   const report = fs.readFileSync(next.report, "utf8");
   assert.match(report, /First review pass: approved, nothing to fix/);
-  assert.match(report, /Breaker: 1 pass\(es\), 1 proven attack\(s\)/);
+  assert.match(report, /Breaker: 1 pass\(es\) completed, 1 proven attack\(s\)/);
 });
 
 test("B: a breaker that touches the branch is refused", (t) => {

@@ -356,3 +356,17 @@ test("a breaker answer changed after a review is not counted as reviewed", () =>
   assert.equal(next.gate, "G1");
   assert.match(renderReport(s, { minutesElapsed: 11 }), /0 of these answers went through a later review pass, 1 did not/);
 });
+
+test("the report says when the breaker was skipped or failed instead of counting a clean pass", () => {
+  const s = fresh({ breaker: true, maxMinutes: 10 });
+  afterBuild(s, done(), green, { at, minutesElapsed: 11 }); // over budget: breaker skipped, fix goes to review
+  afterReview(s, [codex([])], t);
+  const report = renderReport(s, { minutesElapsed: 12 });
+  assert.match(report, /- Breaker: 0 pass\(es\) completed, 1 skipped, 0 proven attack\(s\)/);
+  const s2 = fresh({ breaker: true });
+  afterBuild(s2, done(), green, t);
+  s2.history.push({ at, event: "breaker-failed", detail: "could not build" });
+  afterBreak(s2, [], t);
+  afterReview(s2, [codex([])], t);
+  assert.match(renderReport(s2, { minutesElapsed: 2 }), /- Breaker: 0 pass\(es\) completed, 1 failed/);
+});
