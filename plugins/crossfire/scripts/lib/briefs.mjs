@@ -20,8 +20,8 @@ function findingBlock(e) {
 
 export const MIN_VARIANTS = 3;
 
-/** One or more file:line cites, e.g. "lib/app.rb:120, spec/app_spec.rb:40". */
-export const WHERE_RE = /^\s*[^\s,:]+:\d+(\s*,\s*[^\s,:]+:\d+)*\s*$/;
+/** One or more file:line cites, a line or a range, e.g. "lib/app.rb:120, spec/app_spec.rb:40-52". */
+export const WHERE_RE = /^\s*[^\s,:]+:\d+(-\d+)?(\s*,\s*[^\s,:]+:\d+(-\d+)?)*\s*$/;
 
 /** Fixing a real (non-nit) finding must name the rule and test its variants. */
 export function needsRule(entry) {
@@ -196,7 +196,7 @@ export function validateBuildResult(result, state, repoFacts) {
         if (typeof f.rule !== "string" || f.rule.trim().length < 15) problems.push(`${f.id}: FIXED needs \`rule\`, the broadest rule the fix enforces (one sentence)`);
         const variants = Array.isArray(f.variants) ? f.variants.filter((v) => v && typeof v.test === "string" && v.test.trim()) : [];
         if (variants.length < MIN_VARIANTS) problems.push(`${f.id}: FIXED needs at least ${MIN_VARIANTS} \`variants\` of the rule, each with the \`test\` that covers it (got ${variants.length})`);
-        if (!WHERE_RE.test(String(f.where ?? ""))) problems.push(`${f.id}: FIXED needs \`where\`, the file:line of the fix (e.g. "lib/app.rb:120"; several separated by commas)`);
+        if (!WHERE_RE.test(String(f.where ?? ""))) problems.push(`${f.id}: FIXED needs \`where\`, the file:line of the fix (e.g. "lib/app.rb:120" or "lib/app.rb:15-20"; several separated by commas)`);
       }
       answered.set(f.id, f);
     });

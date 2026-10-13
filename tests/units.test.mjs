@@ -237,3 +237,10 @@ test("a proven breaker attack must say where the bug is (file and line)", () => 
   assert.match(problems, /file is required/);
   assert.match(problems, /line is required/);
 });
+
+import { WHERE_RE } from "../plugins/crossfire/scripts/lib/briefs.mjs";
+
+test("where accepts lines and ranges, one or several; not a bare file or prose", () => {
+  for (const ok of ["src/a.mjs:12", "src/a.mjs:15-20", "src/a.mjs:24, src/a.mjs:15-20", "test/a_test.rb:3,lib/a.rb:9-11"]) assert.ok(WHERE_RE.test(ok), ok);
+  for (const bad of ["somewhere", "src/a.mjs", "src/a.mjs:", "src/a.mjs:12-", "near line 12"]) assert.ok(!WHERE_RE.test(bad), bad);
+});
