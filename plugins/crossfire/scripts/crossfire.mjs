@@ -732,12 +732,15 @@ function attacked(ctx, opts) {
     }
     const dirty = git.dirtyPaths(state.repo);
     if (dirty.length) problems.push(`the breaker changed the working tree (${dirty[0]}...); it must only use a throwaway worktree. Restore the tree before continuing.`);
-    if (state.lastBuildHead && git.head(state.repo) !== state.lastBuildHead) problems.push(`HEAD moved from the builder's commit ${state.lastBuildHead.slice(0, 12)}; the breaker must not commit`);
+    const headMoved = Boolean(state.lastBuildHead && git.head(state.repo) !== state.lastBuildHead);
+    if (headMoved) problems.push(`HEAD moved from the builder's commit ${state.lastBuildHead.slice(0, 12)}; the breaker must not commit. Restore the branch to that commit before continuing.`);
 
     if (problems.length) {
       state.breakerMalformed = (state.breakerMalformed ?? 0) + 1;
       state.history.push({ at, event: "breaker-malformed", detail: problems.join("; ") });
-      if (state.breakerMalformed < 2 || dirty.length) {
+      // An integrity breach (a changed tree or HEAD) never falls through to the
+      // "skip the breaker" fallback: the branch must be restored first, every time.
+      if (state.breakerMalformed < 2 || dirty.length || headMoved) {
         saveState(dir, state);
         out(ctx, [statusLine(state, minutesBetween(state.startedAt)), "MALFORMED: the breaker's result was not accepted (nothing advanced).", ...problems.map((p) => `- ${p}`), `RE-ASK: send the breaker back to ${files.breakerBrief(dir, state.round)} with the problems above, then run crossfire attacked --slug ${state.slug} again.`].join("\n"), { malformed: true, problems });
         return EXIT.MALFORMED;
@@ -797,6 +800,9 @@ function review(ctx, opts) {
     requireNext(state, ACTIONS.RUN_REVIEW);
     const dirty = git.dirtyPaths(state.repo);
     if (dirty.length) throw new CrossfireError(`the working tree has uncommitted changes (${dirty[0]}...); reviewers only see commits. Commit or stash, then run review again.`);
+    if (state.lastBuildHead && git.head(state.repo) !== state.lastBuildHead) {
+      throw new CrossfireError(`HEAD is not the commit the proof commands verified (${state.lastBuildHead.slice(0, 12)}); only a verified commit is reviewed. Restore the branch to it, or record a new builder round first.`);
+    }
 
     const plugins = locatePlugins();
     if (!usable(plugins.codex)) {

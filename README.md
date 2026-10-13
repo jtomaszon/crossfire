@@ -40,20 +40,19 @@ claude plugin install grok-build@xai-grok-build
 
 ### What leaves your machine
 
-Crossfire itself sends nothing anywhere and has no telemetry. The tools it drives do, under their own terms:
+Crossfire itself has no telemetry. The tools it drives send data under their own terms:
 
-- **OpenAI (Codex) and, when installed, xAI (Grok Build):** each review runs their CLI read-only in your repository with crossfire's focus text (the spec or plan excerpt, the PR description you give it, earlier findings). Their agent reads the branch diff and whatever repository files it chooses to read; what it sends to its model is governed by your OpenAI or xAI account.
-- **Anthropic (Claude Code):** the builder, the breaker and the orchestrating session are ordinary Claude Code work.
-- **GitHub:** `crossfire watch` reads the PR's state and comments through `gh`. Crossfire never posts unless you ask.
+- **OpenAI (Codex) and, when usable, xAI (Grok Build),** on every loop review pass and every `crossfire check` (including `/crossfire:review`): crossfire's focus text (an excerpt of the spec, the PR description you give it, earlier findings and the builder's answers to them), and their agent reads the branch diff and whatever repository files it chooses, read-only. Grok is used whenever it is usable unless you pass `--grok off`.
+- **Anthropic (Claude Code):** the orchestrator, the builder and the breaker are ordinary Claude Code sessions; they read the spec, the plan, the briefs and the repository's memory.
+- **GitHub:** `crossfire watch` and `/crossfire:review` read the PR's state, comments and reviews through `gh`.
 
-Local only, never sent or committed: `.crossfire/` (specs, plans, loop runs, checks, the watcher's inbox), `.git/crossfire/memory.md`, and `~/.local/state/crossfire/reviewers.json` (one-line reviewer errors). See [SECURITY.md](SECURITY.md).
+Kept out of git (through `.git/info/exclude`) and stored only on your machine: `.crossfire/` (specs, plans, loop runs, checks, the watcher's inbox), `.git/crossfire/memory.md`, and `~/.local/state/crossfire/reviewers.json` (one-line reviewer errors). "Out of git" is not "never sent": parts of these reach the tools above as described. See [SECURITY.md](SECURITY.md).
 
 ### What crossfire will never do
 
-- Push, merge, rebase onto another branch, force-push, or delete branches. A person does that.
-- Let the breaker touch your branch: it proves attacks in a throwaway worktree, and crossfire refuses a breaker result if the working tree or HEAD changed.
+- The `crossfire` script never pushes, merges, rebases onto another branch, force-pushes, deletes branches, posts to GitHub, installs tools or logs in for you. The Claude session driving it (the orchestrator) may open a PR, push, merge or post only when you ask it to.
+- Let the breaker change your branch: it proves attacks in a throwaway worktree; crossfire refuses its result, every time, while the working tree or HEAD differs from the builder's commit, and never reviews a commit the proof commands did not verify.
 - Let a reviewer write: Codex and Grok run read-only.
-- Post to GitHub, install tools or log in for you.
 - Guess: when something is ambiguous, the referee escalates to you instead of looping again.
 
 ### Codex and Grok on Linux

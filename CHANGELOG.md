@@ -7,6 +7,8 @@ Public-repository hygiene, from the first outside review.
 - README: what leaves your machine, what crossfire will never do, the loop as a numbered list, the plugin-dependencies requirement next to the install command, JARVIS explained; stale private-repository instructions and the old marketplace migration removed.
 - One wording for Grok Build's plan requirement in the README, the setup skill and `doctor`.
 - SECURITY.md (how to report, what crossfire is trusted with, what leaves your machine), CONTRIBUTING.md, issue and pull-request templates.
+- **Fix, found by reviewing these documents against the code:** a breaker that committed (leaving the tree clean) was refused once, then skipped on the second attempt, so review ran on a commit the proof commands never verified. HEAD drift is now refused every time, and `review` refuses any HEAD other than the one the proof commands verified.
+- The documents say precisely what is sent where (spec excerpts, earlier findings and the builder's answers reach the reviewers; "kept out of git" is not "never sent"), that Grok also runs on `crossfire check` whenever it is usable, and that the `crossfire` script never pushes or posts while the orchestrator does only when asked.
 
 ## 1.0.0
 
