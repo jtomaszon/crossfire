@@ -8,6 +8,8 @@ From the first outside review.
 - **file:line everywhere:** a FIXED BLOCKER or CHANGES finding needs `where` (the file:line of the fix), and a proven breaker attack needs its `file` and `line`; the referee refuses results without them.
 - **"Still open" needs the reviewer's tag.** On a re-check, an earlier finding is still open only when a reviewer re-flags it with its `[Pn]` tag. An untagged finding near an earlier one is reported as new, "near Pn", and that earlier finding as unclear: never guessed fixed or open (it was a known issue).
 - **Skill descriptions start with their trigger phrases,** so Claude routes to the right skill.
+- `where` accepts line ranges (`src/serve.mjs:15-20`) and lists (`a.mjs:3, b.mjs:9`); a pre-release refused ranges.
+- The timeline records a review pass when the reviewers finish, not when they start.
 
 ## 1.0.1
 
