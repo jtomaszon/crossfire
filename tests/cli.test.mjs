@@ -1101,17 +1101,80 @@ test("ladder: after SHIP it reports pushed, PR, CI and merged as facts, and neve
 
   spawnSync("git", ["push", "-q", "origin", `HEAD:refs/heads/${branch}`], { cwd: sb.repo });
   fs.writeFileSync(`${d}/prs.json`, JSON.stringify([pr()]));
-  fs.writeFileSync(`${d}/checks.json`, JSON.stringify([{ name: "test", bucket: "pass" }, { name: "lint", bucket: "pending" }]));
+  const jsonl = (rows) => rows.map((x) => JSON.stringify(x)).join("\n") + "\n";
+  fs.writeFileSync(`${d}/check-runs.jsonl`, jsonl([
+    { name: "test", status: "completed", conclusion: "success" },
+    { name: "lint", status: "in_progress", conclusion: null },
+    { name: "docs", status: "completed", conclusion: "skipped" },
+  ]));
+  fs.writeFileSync(`${d}/statuses.jsonl`, jsonl([{ name: "ci/legacy", state: "failure" }]));
   r = ladder();
   assert.match(r.stdout, /1\. pushed: +yes/);
   assert.match(r.stdout, /2\. PR: +#9 open into main .*head is the shipped commit/);
-  assert.match(r.stdout, /3\. CI: +1 passed, 0 failed, 1 pending/);
+  assert.match(r.stdout, new RegExp(`3\\. CI: +1 passed, 1 failed, 1 pending, 1 skipped \\(on ${head.slice(0, 12)}\\)`));
   assert.match(r.stdout, /4\. merged: +no/);
+  const ciCalls = fs.readFileSync(`${d}/calls.log`, "utf8").split("\n").filter((l) => l.includes("check-runs") || l.includes("/status"));
+  assert.ok(ciCalls.length >= 2 && ciCalls.every((l) => l.includes(`/commits/${head}/`)), "CI is read for the shipped commit itself");
 
-  // The PR head moves between the list and the checks: CI is unknown, not borrowed.
+  // A required check that has not reported yet is pending, not missing.
+  fs.writeFileSync(`${d}/rollup.json`, JSON.stringify([{ __typename: "StatusContext", context: "required/e2e", state: "EXPECTED" }]));
+  assert.match(ladder().stdout, /3\. CI: +1 passed, 1 failed, 2 pending, 1 skipped/);
+  fs.rmSync(`${d}/rollup.json`);
+
+  // An incomplete list, an unknown outcome, or a PR that cannot be read back: CI unknown.
+  fs.writeFileSync(`${d}/check-runs-total`, "250");
+  assert.match(ladder().stdout, /3\. CI: +unknown \(GitHub returned fewer checks than it counts/);
+  fs.rmSync(`${d}/check-runs-total`);
+  fs.writeFileSync(`${d}/check-runs.jsonl`, jsonl([{ name: "odd", status: "completed", conclusion: "something_new" }]));
+  assert.match(ladder().stdout, /3\. CI: +unknown \(check odd finished with an outcome crossfire does not know/);
+  fs.writeFileSync(`${d}/check-runs.jsonl`, jsonl([{ name: "odd", status: "something_new", conclusion: null }]));
+  assert.match(ladder().stdout, /3\. CI: +unknown \(check odd has a status crossfire does not know/);
+  // A check run GitHub has queued but not created on the commit yet is pending.
+  fs.writeFileSync(`${d}/check-runs.jsonl`, jsonl([{ name: "test", status: "completed", conclusion: "success" }]));
+  fs.writeFileSync(`${d}/rollup.json`, JSON.stringify([{ __typename: "CheckRun", name: "deploy-preview", status: "QUEUED" }]));
+  assert.match(ladder().stdout, /3\. CI: +1 passed, 1 failed, 1 pending/);
+  // A rerun queued over a finished run of the same name: pending, not the old pass.
+  fs.writeFileSync(`${d}/rollup.json`, JSON.stringify([{ __typename: "CheckRun", name: "test", status: "QUEUED" }]));
+  assert.match(ladder().stdout, /3\. CI: +0 passed, 1 failed, 1 pending/);
+  // A queued check run and a commit status that share a name are different checks.
+  fs.writeFileSync(`${d}/statuses.jsonl`, jsonl([{ name: "deploy", state: "success" }]));
+  fs.writeFileSync(`${d}/rollup.json`, JSON.stringify([{ __typename: "CheckRun", name: "deploy", status: "QUEUED" }]));
+  assert.match(ladder().stdout, /3\. CI: +2 passed, 0 failed, 1 pending/);
+  fs.writeFileSync(`${d}/statuses.jsonl`, jsonl([{ name: "ci/legacy", state: "failure" }]));
+  // 100 or more rollup entries: too many to confirm complete.
+  fs.writeFileSync(`${d}/rollup.json`, JSON.stringify(Array.from({ length: 100 }, (_, i) => ({ __typename: "StatusContext", context: `c${i}`, state: "SUCCESS" }))));
+  assert.match(ladder().stdout, /3\. CI: +unknown \(the PR has 100 or more checks/);
+  fs.rmSync(`${d}/rollup.json`);
+  fs.writeFileSync(`${d}/view-fail`, "");
+  r = sb.cf("ladder", "--slug", "demo", "--repo", "acme/app", "--json");
+  assert.equal(r.json().ci, null, "no CI counts when the PR cannot be read back");
+  fs.rmSync(`${d}/view-fail`);
+
+  // The PR head moves while the ladder reads it: CI unknown, and --json says where it went.
   fs.writeFileSync(`${d}/moved-head`, "2".repeat(40));
-  assert.match(ladder().stdout, /3\. CI: +unknown \(the PR's head changed/);
+  r = ladder();
+  assert.match(r.stdout, /2\. PR: +#9 .*its head moved from [0-9a-f]{12} to 222222222222 while the ladder read it/);
+  assert.doesNotMatch(r.stdout, /head is the shipped commit/);
+  assert.match(r.stdout, /3\. CI: +unknown \(the PR's head moved\)/);
+  assert.match(r.stdout, /4\. merged: +unknown/);
+  const j = sb.cf("ladder", "--slug", "demo", "--repo", "acme/app", "--json").json();
+  assert.equal(j.ci, null);
+  assert.equal(j.headNow, "2".repeat(40));
+  assert.equal(j.pr.headRefOid, "2".repeat(40), "the JSON never keeps the old head as current");
+  assert.equal(j.pr.has, null, "nor its ancestry");
   fs.rmSync(`${d}/moved-head`);
+
+  // The head moves while the checks are being read (after the first read-back): CI unknown.
+  fs.writeFileSync(`${d}/view-reads`, "0");
+  fs.writeFileSync(`${d}/moved-head-later`, "4".repeat(40));
+  r = ladder();
+  assert.match(r.stdout, /its head moved from [0-9a-f]{12} to 444444444444/);
+  assert.match(r.stdout, /3\. CI: +unknown \(the PR's head moved\)/);
+  fs.rmSync(`${d}/moved-head-later`);
+  fs.writeFileSync(`${d}/moved-head`, "2".repeat(40)); // restored for the cleanup below
+  fs.rmSync(`${d}/moved-head`);
+  fs.rmSync(`${d}/statuses.jsonl`);
+  fs.rmSync(`${d}/check-runs.jsonl`);
 
   // Merged into the loop's base; GitHub then deletes the branch: still merged.
   fs.writeFileSync(`${d}/prs.json`, JSON.stringify([pr({ state: "MERGED" })]));

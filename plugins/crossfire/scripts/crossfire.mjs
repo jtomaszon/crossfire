@@ -16,7 +16,7 @@ import { appendLessons, lessonsBlock, lessonsFromCheck, lessonsFromLoop, memoryF
 import { classifyProofFailure, grokSocketHint, readHealth, recordAttempt, summarize } from "./lib/health.mjs";
 import { CrossfireError, EXIT, atomicWriteJson, minutesBetween, nowIso, readJsonFile, run, runShell, tail, writeText } from "./lib/util.mjs";
 
-const VERSION = "1.2.0";
+const VERSION = "1.2.1";
 
 const USAGE = `crossfire ${VERSION}: referee for a spec-first build -> review -> fix loop
 
@@ -900,6 +900,56 @@ function report(ctx, opts) {
   return EXIT.OK;
 }
 
+/**
+ * CI for one commit: its check runs (GitHub Actions and apps, latest per name) and its commit
+ * statuses (older integrations), plus required checks the PR still expects. Counted as pass,
+ * fail, pending and skipping. { counts } or { error } (anything incomplete or unrecognised).
+ */
+function ciForCommit(target, sha, cwd, expected = []) {
+  const api = (endpoint, jq) => run(W.ghBin(), W.ghArgs(target.gh, ["api", endpoint, "--paginate", "--jq", jq]), { cwd, timeoutMs: 30_000 });
+  const pages = (r) => r.stdout.split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  const fail = (r) => ({ error: (r.stderr || `exit ${r.status}`).trim().split("\n")[0] });
+  const runsR = api(`repos/${target.nwo}/commits/${sha}/check-runs?filter=latest&per_page=100`, "{total: .total_count, rows: [.check_runs[] | {name, status, conclusion}]}");
+  if (runsR.status !== 0) return fail(runsR);
+  const statR = api(`repos/${target.nwo}/commits/${sha}/status?per_page=100`, "{total: .total_count, rows: [.statuses[] | {name: .context, state}]}");
+  if (statR.status !== 0) return fail(statR);
+  let runs;
+  let stats;
+  try {
+    runs = pages(runsR);
+    stats = pages(statR);
+  } catch {
+    return { error: "gh returned something that is not JSON" };
+  }
+  const rows = (ps) => ps.flatMap((p) => p.rows ?? []);
+  const complete = (ps) => ps.length > 0 && rows(ps).length === Number(ps[0].total ?? -1);
+  if (!complete(runs) || !complete(stats)) return { error: "GitHub returned fewer checks than it counts; the list is incomplete" };
+  const items = [];
+  for (const r of rows(runs)) {
+    if (["queued", "in_progress", "waiting", "requested", "pending"].includes(r.status) || (r.status === "completed" && r.conclusion === "stale")) items.push(["run", r.name, "pending"]);
+    else if (r.status !== "completed") return { error: `check ${r.name} has a status crossfire does not know (${r.status})` };
+    else if (r.conclusion === "success") items.push(["run", r.name, "pass"]);
+    else if (["neutral", "skipped"].includes(r.conclusion)) items.push(["run", r.name, "skipping"]);
+    else if (["failure", "timed_out", "action_required", "cancelled", "startup_failure"].includes(r.conclusion)) items.push(["run", r.name, "fail"]);
+    else return { error: `check ${r.name} finished with an outcome crossfire does not know (${r.conclusion})` };
+  }
+  for (const x of rows(stats)) {
+    if (x.state === "success") items.push(["status", x.name, "pass"]);
+    else if (x.state === "pending") items.push(["status", x.name, "pending"]);
+    else if (["failure", "error"].includes(x.state)) items.push(["status", x.name, "fail"]);
+    else return { error: `status ${x.name} has a state crossfire does not know (${x.state})` };
+  }
+  // Checks GitHub still awaits (not created yet, or a rerun queued over an earlier result) are
+  // pending: they replace a settled row of the same kind and name, or are added.
+  for (const { kind, name } of expected) {
+    const row = items.find(([k, n]) => k === kind && n === name);
+    if (row) row[2] = "pending";
+    else items.push([kind, name, "pending"]);
+  }
+  const n = (b) => items.filter(([, , x]) => x === b).length;
+  return { counts: { total: items.length, pass: n("pass"), fail: n("fail"), pending: n("pending"), skipping: n("skipping") } };
+}
+
 // ---- ladder (read-only, after SHIP) ---------------------------------------
 
 /**
@@ -994,34 +1044,55 @@ function ladder(ctx, opts) {
       rungs.push(`2. PR:      #${pr.number} ${pr.state.toLowerCase()} into ${pr.baseRefName ?? "?"} ${pr.url}, head ${short(pr.headRefOid)}: unknown whether it contains ${short(shipHead)} (this clone ${shallow ? "is shallow" : "does not have that commit"}: fetch to compare)${truncated}`, "3. CI:      unknown", "4. merged:  unknown");
     } else {
       const extra = pr.headRefOid === shipHead ? "head is the shipped commit" : `head ${short(pr.headRefOid)} has commits on top of the shipped commit that this loop did not review`;
+      const rung2 = rungs.length;
       rungs.push(`2. PR:      #${pr.number} ${pr.state.toLowerCase()}${pr.isDraft ? " (draft)" : ""}${pr.isCrossRepository ? " (from a fork)" : ""} into ${pr.baseRefName ?? "?"} ${pr.url}; ${extra}${othersMerged.length ? `; also merged: ${othersMerged.map((p) => `#${p.number} into ${p.baseRefName}`).join(", ")}` : ""}${truncated}`);
-      // CI for that PR, bound to the head validated above: re-read the head after the checks.
-      const c = run(W.ghBin(), W.ghArgs(target.gh, ["pr", "checks", String(pr.number), "--json", "name,bucket"]), { cwd: state.repo, timeoutMs: 30_000 });
-      const v = run(W.ghBin(), W.ghArgs(target.gh, ["pr", "view", String(pr.number), "--json", "headRefOid,state"]), { cwd: state.repo, timeoutMs: 30_000 });
-      let after = null;
-      try {
-        after = JSON.parse(v.stdout || "null");
-      } catch {
-        after = null;
+      // The PR is read back (head, state, and the checks it still awaits), CI is read for that exact
+      // commit, then the PR is read once more: CI is reported only if the head held throughout.
+      const view = () => {
+        const v = run(W.ghBin(), W.ghArgs(target.gh, ["pr", "view", String(pr.number), "--json", "headRefOid,state,statusCheckRollup"]), { cwd: state.repo, timeoutMs: 30_000 });
+        try {
+          const j = v.status === 0 ? JSON.parse(v.stdout || "null") : null;
+          return j && typeof j === "object" ? { ok: j } : { error: (v.stderr || `exit ${v.status}`).trim().split("\n")[0] };
+        } catch {
+          return { error: "gh returned something that is not JSON" };
+        }
+      };
+      const moved = (now) => {
+        // Nothing read for the old head is a fact about the PR any more.
+        data.headNow = now.headRefOid;
+        data.pr = { number: pr.number, url: pr.url, baseRefName: pr.baseRefName, state: now.state ?? null, headRefOid: now.headRefOid, headMoved: true, has: null };
+        rungs[rung2] = `2. PR:      #${pr.number} ${pr.url}: its head moved from ${short(pr.headRefOid)} to ${short(now.headRefOid)} while the ladder read it; unknown whether it contains ${short(shipHead)}: run the ladder again`;
+        rungs.push("3. CI:      unknown (the PR's head moved)");
+      };
+      const first = view();
+      let after = first.ok ?? null;
+      if (!after) rungs.push(`3. CI:      unknown (could not read PR #${pr.number} back: ${first.error})`);
+      else if (after.headRefOid !== pr.headRefOid) moved(after);
+      else {
+        const rollup = Array.isArray(after.statusCheckRollup) ? after.statusCheckRollup : null;
+        const awaited = (c) => c?.state === "EXPECTED" || (c?.__typename === "CheckRun" && ["QUEUED", "REQUESTED", "WAITING", "PENDING", "IN_PROGRESS"].includes(c.status));
+        const expected = (rollup ?? []).filter(awaited).map((c) => ({ kind: c.__typename === "CheckRun" ? "run" : "status", name: c.context ?? c.name })).filter((e) => e.name);
+        // gh reads at most 100 rollup entries; past that, a check still awaited could be missing.
+        const ci = !rollup || rollup.length >= 100 ? { error: !rollup ? "the PR's check rollup could not be read" : "the PR has 100 or more checks, more than crossfire can confirm complete" } : ciForCommit(target, pr.headRefOid, state.repo, expected);
+        const second = ci.error ? null : view();
+        if (ci.error) rungs.push(`3. CI:      unknown (${ci.error})`);
+        else if (!second.ok) {
+          after = null;
+          rungs.push(`3. CI:      unknown (could not read PR #${pr.number} back after reading its checks: ${second.error})`);
+        } else if (second.ok.headRefOid !== pr.headRefOid) {
+          after = second.ok;
+          moved(after);
+        } else {
+          after = second.ok;
+          data.ci = { ...ci.counts, head: pr.headRefOid };
+          const c = ci.counts;
+          rungs.push(`3. CI:      ${c.total ? `${c.pass} passed, ${c.fail} failed, ${c.pending} pending${c.skipping ? `, ${c.skipping} skipped` : ""}` : "no checks reported yet"} (on ${short(pr.headRefOid)})`);
+        }
       }
-      let checks = null;
-      try {
-        checks = JSON.parse(c.stdout || "null"); // gh exits non-zero while checks fail or are pending
-      } catch {
-        checks = null;
-      }
-      if (!after || after.headRefOid !== pr.headRefOid) rungs.push(`3. CI:      unknown (the PR's head changed while it was being read, or gh could not say: run the ladder again)`);
-      else if (Array.isArray(checks)) {
-        const n = (b) => checks.filter((x) => x.bucket === b).length;
-        data.ci = { total: checks.length, pass: n("pass"), fail: n("fail") + n("cancel"), pending: n("pending"), skipping: n("skipping"), head: pr.headRefOid };
-        rungs.push(`3. CI:      ${checks.length ? `${data.ci.pass} passed, ${data.ci.fail} failed, ${data.ci.pending} pending${data.ci.skipping ? `, ${data.ci.skipping} skipped` : ""}` : "no checks reported yet"} (on ${short(pr.headRefOid)})`);
-      } else if (/no checks/i.test(c.stderr)) {
-        data.ci = { total: 0, pass: 0, fail: 0, pending: 0, skipping: 0, head: pr.headRefOid };
-        rungs.push(`3. CI:      no checks reported yet (on ${short(pr.headRefOid)})`);
-      } else rungs.push(`3. CI:      unknown (gh: ${(c.stderr || `exit ${c.status}`).trim().split("\n")[0]})`);
       // The state read back last is the newest; if it is missing, merged is unknown unless another PR settles it.
       const nowState = after && after.headRefOid === pr.headRefOid ? after.state : null;
-      if (mergedFact === true) data.merged = true;
+      if (data.headNow) data.merged = mergedFact === true ? true : null;
+      else if (mergedFact === true) data.merged = true;
       else if (nowState === "MERGED" && onBase(pr)) data.merged = true;
       else if (!nowState) data.merged = null;
       else data.merged = mergedFact;
