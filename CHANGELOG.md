@@ -2,7 +2,11 @@
 
 ## 1.2.1
 
-- **`crossfire ladder` reads CI for the commit itself**, not for the PR number: the check runs and commit statuses of the PR head it validated (`gh api repos/.../commits/<sha>/check-runs` and `/status`). CI can no longer be attributed to a different head, and if the PR moves while the ladder reads it, the CI line says so. This removes the known issue listed in 1.2.0. CI is reported only when the PR, read back, still has that head (otherwise unknown, and `--json` gives `headNow`); a list shorter than GitHub's own count, or an outcome crossfire does not know, is unknown rather than a tally; required checks that have not reported yet (and check runs GitHub has queued but not created) count as pending; a PR with 100 or more checks, or a check status crossfire does not know, is unknown. If the PR's head moves while the ladder reads it (checked before and after reading CI), the PR line says so and nothing read for the old head is reported as current. A rerun queued over a finished check of the same name is pending, and check runs and commit statuses that share a name are kept apart.
+- **`crossfire ladder` reads CI for the commit itself**, not for the PR number: the check runs and commit statuses of the PR head it validated (`gh api repos/.../commits/<sha>/check-runs` and `/status`), so CI can no longer be attributed to a different head. This removes the known issue listed in 1.2.0.
+- **The PR's head is read before and after CI.** CI is reported only when the PR, read back, still has that head (otherwise unknown, and `--json` gives `headNow`). If the head moves while the ladder reads it, the PR line and the CI line say so, and nothing read for the old head is reported as current.
+- **Unknown, not a tally:** a list shorter than GitHub's own count, a PR with 100 or more checks, and an outcome or check status crossfire does not know.
+- **Pending:** required checks that have not reported yet, check runs GitHub has queued but not created, and a rerun queued over a finished check of the same name.
+- Check runs and commit statuses that share a name are kept apart.
 
 ## 1.2.0
 
