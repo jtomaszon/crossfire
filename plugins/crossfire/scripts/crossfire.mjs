@@ -555,7 +555,7 @@ function check(ctx, opts) {
     `CHECK ${id} · ${branch ?? "HEAD"} ${head.slice(0, 12)} against ${base}`,
     `REVIEWERS: ${reviewersText}`,
     ...results.filter((r) => !r.ok).map((r) => `WARNING: ${r.reviewer} did not review (${r.error}); this check rests on Codex alone.`),
-    ...(since ? [`SINCE ${since.id} (${since.head.slice(0, 12)}): ${since.resolved.length} fixed, ${since.stillOpen.length} still open, ${since.unclear.length} unclear, ${since.fresh} new`, ...since.resolved.map((p) => `  fixed: [P${p.index}] ${p.title}`), ...since.stillOpen.map((s) => `  still open: [P${s.previous.index}] ${s.previous.title}`), ...since.unclear.map((p) => `  unclear: [P${p.index}] ${p.title} (a new finding is near it; read both)`), ...since.near.map((n) => `  new (near P${n.near}): ${n.title}`)] : []),
+    ...(since ? [`SINCE ${since.id} (${since.head.slice(0, 12)}): ${since.resolved.length} fixed, ${since.stillOpen.length} still open, ${since.unclear.length} unclear, ${since.fresh} new`, ...since.resolved.map((p) => `  fixed: [P${p.index}] ${p.title}`), ...since.stillOpen.map((s) => `  still open: [P${s.previous.index}] ${s.previous.title}`), ...since.unclear.map((p) => `  unclear: [P${p.index}] ${p.title} (a new finding is near it; read both)`), ...since.near.map((n) => `  new (near ${n.near}): ${n.title}`)] : []),
     `VERDICT: ${findings.length ? `${findings.length} finding(s): ${counts}` : "APPROVED, nothing to fix"}`,
     ...findings.map((f, i) => `  ${i + 1}. ${f.severity} ${f.file ?? ""}${f.lineStart ? `:${f.lineStart}` : ""} ${f.title} (${f.reviewers.join("+")})`),
     `REPORT: ${report}`,

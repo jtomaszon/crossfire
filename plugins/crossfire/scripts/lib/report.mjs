@@ -76,6 +76,10 @@ export function renderReport(state, { minutesElapsed, changedFiles = [], head = 
   const lastAnswer = (e) => e.history.at(-1)?.builder;
   const answered = (a) => breakerItems.filter((e) => lastAnswer(e) === a).length;
   const unanswered = breakerItems.filter((e) => !lastAnswer(e)).length;
+  // Each answer on its own: reviewed when a review pass ran after it (closed, or held at a finding's place).
+  const reviewedAnswer = (e) => e.status === "closed" || (e.reflaggedPass != null && e.reflaggedPass > (e.claimedPass ?? -1));
+  const withAnswer = breakerItems.filter((e) => lastAnswer(e));
+  const reviewedN = withAnswer.filter(reviewedAnswer).length;
   const reviewerFailures = (state.reviewerRuns ?? []).filter((r) => !r.ok);
   out.push(
     "",
@@ -83,7 +87,7 @@ export function renderReport(state, { minutesElapsed, changedFiles = [], head = 
     `- Proof commands crossfire ran itself (last run, round ${state.lastProof?.round ?? "-"}):${state.lastProof?.commands?.length ? "" : " none declared"}`,
     ...(state.lastProof?.commands ?? []).map((c) => `  - \`${c.command}\`: exit ${c.status}`),
     `- Tests the builder named this loop: ${(state.testsNamed ?? []).length}${(state.testsNamed ?? []).length ? ` (${state.testsNamed.slice(0, 12).join(", ")}${state.testsNamed.length > 12 ? ", ..." : ""})` : ""}. Crossfire checks that they pass only through the proof commands above.`,
-    `- Breaker: ${state.breaker === false ? "off" : `${breakerItems.length} attack(s) proven with failing tests; the builder answered ${answered("FIXED")} FIXED and ${answered("DISPUTED")} DISPUTED${unanswered ? `, ${unanswered} unanswered` : ""}${breakerItems.length ? (breakerItems.some((e) => e.status === "closed") ? "; the answers were in front of the reviewers in a later pass" : "; no review pass ran after the answers") : ""}`}`,
+    `- Breaker: ${state.breaker === false ? "off" : `${breakerItems.length} attack(s) proven with failing tests; the builder answered ${answered("FIXED")} FIXED and ${answered("DISPUTED")} DISPUTED${unanswered ? `, ${unanswered} unanswered` : ""}${withAnswer.length ? `; ${reviewedN} of these answers went through a later review pass, ${withAnswer.length - reviewedN} did not` : ""}`}`,
     `- Reviewers read the branch diff against \`${state.base}\` read-only: ${reviewersText ?? "not recorded"}${reviewerFailures.length ? `; ${reviewerFailures.length} reviewer pass(es) did not complete` : ""}.`,
     "- Not verified by crossfire: anything outside the proof commands (the full test suite, lint, migrations, deploys). CI on the pull request is that gate.",
   );
@@ -93,12 +97,13 @@ export function renderReport(state, { minutesElapsed, changedFiles = [], head = 
     const ids = (list) => list.map((e) => `${e.id} (${e.severity})`).join(", ");
     const open = [...openAboveNit(state), ...openNits(state)];
     const claimed = state.ledger.filter((e) => e.status === "claimed_fixed" && e.severity !== "NIT");
-    const reflagged = claimed.filter((e) => e.reflaggedPass != null && e.reflaggedPass > (e.claimedPass ?? -1));
-    const unreviewed = claimed.filter((e) => !reflagged.includes(e) && (e.claimedPass ?? -1) >= state.reviewPass);
+    // Loops started before 1.1.0 have no claimedPass: treat their claims as not re-reviewed.
+    const reflagged = claimed.filter((e) => e.reflaggedPass != null && e.claimedPass != null && e.reflaggedPass > e.claimedPass);
+    const unreviewed = claimed.filter((e) => !reflagged.includes(e));
     const disputed = state.ledger.filter((e) => e.status === "disputed_internal" || e.status === "disputed");
     const groups = [
       [open, "Still open"],
-      [reflagged, "Claimed fixed, then re-flagged by a reviewer"],
+      [reflagged, "Claimed fixed, then re-flagged (or flagged at the same place) by a reviewer"],
       [unreviewed, "Claimed fixed by the builder, not re-reviewed"],
       [disputed, "Disputed by the builder, not settled by a reviewer"],
     ].filter(([list]) => list.length);

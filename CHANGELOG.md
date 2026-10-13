@@ -25,6 +25,7 @@ From crossfire's review of this release (Codex + Grok):
 - The breaker line counts the builder's answers (FIXED, DISPUTED) and says whether a review ran after them, instead of calling every closed attack "hardened".
 - `where` must use lines from 1 with ranges in order, is kept on the finding, shown to the reviewers next pass ("FIXED at a.js:10") and in the report's findings table.
 - An odd `variants` value on a DISPUTED answer no longer crashes `built`.
+- Second review: when two reviewers report the same place, every reviewer's tag counts (a merged finding kept only one title). A finding at the place of several claimed fixes keeps all of them open (only one was, the rest were closed as accepted), and on a re-check a tagged re-flag keeps its neighbours unclear. Breaker answers are counted as reviewed or not one by one. Claimed fixes in loops started before 1.1.0 are listed as not re-reviewed. The builder brief's `where` example passes the `where` check.
 
 ## 1.0.1
 

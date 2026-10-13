@@ -231,7 +231,7 @@ test("G3 and G4 escalations: a re-flagged fix is reported as re-flagged, and the
   const next = afterReview(s, [codex([f("BLOCKER", "[F1] still a hole", "a.js", 10), f("CHANGES", "leak on retry", "b.js", 41)])], t);
   assert.ok(["G3", "G4"].includes(next.gate));
   const report = renderReport(s, { minutesElapsed: 2 });
-  assert.match(report, /Claimed fixed, then re-flagged by a reviewer: F1 \(BLOCKER\), F2 \(BLOCKER\)/);
+  assert.match(report, /Claimed fixed, then re-flagged \(or flagged at the same place\) by a reviewer: F1 \(BLOCKER\), F2 \(BLOCKER\)/);
   assert.doesNotMatch(report, /not re-reviewed/);
   assert.match(report, /Still open: F3 \(CHANGES\)/);
   assert.match(report, /a\.js:10 \(fix: a\.js:10\)/);
@@ -244,8 +244,54 @@ test("breaker evidence counts the builder's answers; a dispute on an early stop 
   const next = afterBuild(s, done([{ id: "B1", status: "DISPUTED", note: "lock covers it" }, { id: "B2", status: "FIXED", where: "b.js:5" }]), green, { at, minutesElapsed: 11 });
   assert.equal(next.gate, "G6");
   const report = renderReport(s, { minutesElapsed: 11 });
-  assert.match(report, /the builder answered 1 FIXED and 1 DISPUTED; no review pass ran after the answers/);
+  assert.match(report, /the builder answered 1 FIXED and 1 DISPUTED; 0 of these answers went through a later review pass, 2 did not/);
   assert.match(report, /Claimed fixed by the builder, not re-reviewed: B2 \(BLOCKER\)/);
   assert.match(report, /Disputed by the builder, not settled by a reviewer: B1 \(BLOCKER\)/);
   assert.doesNotMatch(report, /hardened/);
+});
+
+
+test("two reviewers tag different earlier findings at the same place: both are re-flagged (G3)", () => {
+  const s = fresh();
+  afterBuild(s, done(), green, t);
+  afterReview(s, [codex([f("BLOCKER", "a", "a.js", 10), f("BLOCKER", "b", "a.js", 12)])], t);
+  afterBuild(s, done([{ id: "F1", status: "FIXED", where: "a.js:10" }, { id: "F2", status: "FIXED", where: "a.js:12" }]), green, t);
+  const grok = { reviewer: "grok", ok: true, verdict: "needs-attention", summary: "s", findings: [f("BLOCKER", "[F2] still b", "a.js", 11)] };
+  afterReview(s, [codex([f("BLOCKER", "[F1] still a", "a.js", 11)]), grok], t);
+  assert.ok(s.history.some((h) => /F1 re-flagged/.test(h.detail ?? "")) || s.terminal.reason.includes("F1"));
+  assert.equal(s.ledger.find((e) => e.id === "F2").status, "claimed_fixed", "F2 is not closed");
+  assert.equal(s.ledger.find((e) => e.id === "F1").status, "claimed_fixed");
+});
+
+test("one finding at the place of two claimed fixes: neither is closed, G4 names both", () => {
+  const s = fresh();
+  afterBuild(s, done(), green, t);
+  afterReview(s, [codex([f("BLOCKER", "a", "a.js", 10), f("CHANGES", "b", "a.js", 12)])], t);
+  afterBuild(s, done([{ id: "F1", status: "FIXED", where: "a.js:10" }, { id: "F2", status: "FIXED", where: "a.js:12" }]), green, t);
+  const next = afterReview(s, [codex([f("BLOCKER", "new at 11", "a.js", 11)])], t);
+  assert.equal(next.gate, "G4");
+  assert.deepEqual(s.ledger.filter((e) => e.status === "closed").map((e) => e.id), []);
+  const report = renderReport(s, { minutesElapsed: 2 });
+  assert.match(report, /F1 \(BLOCKER\), F2 \(CHANGES\)/);
+});
+
+test("breaker coverage is counted per answer across rounds", () => {
+  const s = fresh({ breaker: true, maxMinutes: 10 });
+  afterBuild(s, done(), green, t);
+  afterBreak(s, [attack("first", "a.js", 10)], t);
+  afterBuild(s, done([{ id: "B1", status: "FIXED", where: "a.js:10" }]), green, t);
+  afterReview(s, [codex([f("CHANGES", "elsewhere", "z.js", 90)])], t);
+  afterBuild(s, done([{ id: "F1", status: "FIXED", where: "z.js:90" }]), green, t);
+  afterBreak(s, [attack("second", "b.js", 5)], t);
+  const next = afterBuild(s, done([{ id: "B2", status: "FIXED", where: "b.js:5" }]), green, { at, minutesElapsed: 11 });
+  assert.equal(next.gate, "G6");
+  const report = renderReport(s, { minutesElapsed: 11 });
+  assert.match(report, /1 of these answers went through a later review pass, 1 did not/);
+});
+
+test("a claimed fix from a loop started before 1.1.0 (no claimedPass) is listed as not re-reviewed", () => {
+  const s = fresh();
+  s.ledger.push({ id: "F1", source: "review", severity: "BLOCKER", title: "x", file: "a.js", lineStart: 1, lineEnd: 1, reviewers: ["codex"], status: "claimed_fixed", claimedRound: 2, history: [{ builder: "FIXED" }] });
+  s.terminal = { kind: "escalated", gate: "G1", reason: "reviewer failed twice" };
+  assert.match(renderReport(s, { minutesElapsed: 5 }), /not re-reviewed: F1 \(BLOCKER\)/);
 });

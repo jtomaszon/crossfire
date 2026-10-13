@@ -480,6 +480,21 @@ test("check --since: the reviewers get the earlier findings tagged, and the delt
   assert.match(fs.readFileSync(`${sb.repo}/.crossfire/checks/pr-1-b/report.md`, "utf8"), /## Since pr-1/);
 });
 
+test("check --since: a new finding near an earlier one prints its id once (near P2, not PP2)", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  commitChange(sb);
+  sb.queue("codex", needs(finding("high", "token unchecked", "app.txt", 1), finding("medium", "missing index", "db.sql", 3)));
+  sb.queue("grok", approve);
+  sb.cf("check", "--base", "main", "--name", "pr-1");
+  commitChange(sb, "v3\n");
+  sb.queue("codex", needs(finding("low", "index name", "db.sql", 4)));
+  sb.queue("grok", approve);
+  const r = sb.cf("check", "--base", "main", "--since", "pr-1", "--name", "pr-1-b");
+  assert.match(r.stdout, /new \(near P2\): index name/);
+  assert.doesNotMatch(r.stdout, /PP\d/);
+});
+
 function runAsync(sb, args) {
   // Test remotes are local bare repositories, not GitHub URLs: name the PR's repository.
   if (args[0] === "watch" && args.includes("--pr") && !args.includes("--repo") && !args.includes("--no-repo")) args = [...args, "--repo", "acme/app"];

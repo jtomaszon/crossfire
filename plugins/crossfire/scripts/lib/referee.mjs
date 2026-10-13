@@ -258,14 +258,16 @@ export function compareWithPrevious(previous, current) {
   const tagged = new Set();
   const near = new Set();
   for (const f of current) {
-    const tag = /^\s*\[P(\d+)\]/.exec(f.title ?? "")?.[1];
-    const i = tag ? Number(tag) - 1 : -1;
-    if (i >= 0 && i < previous.length) {
-      if (!tagged.has(i)) stillOpen.push({ previous: { index: i + 1, ...previous[i] }, now: f, how: "re-flagged" });
-      tagged.add(i);
+    const close = previous.flatMap((p, j) => (overlaps(p, f) ? [j] : []));
+    const idx = [...new Set(titlesOf(f).map((t) => /^\s*\[P(\d+)\]/.exec(t)?.[1]).filter(Boolean).map((n) => Number(n) - 1))].filter((i) => i >= 0 && i < previous.length);
+    if (idx.length) {
+      for (const i of idx) {
+        if (!tagged.has(i)) stillOpen.push({ previous: { index: i + 1, ...previous[i] }, now: f, how: "re-flagged" });
+        tagged.add(i);
+      }
+      for (const j of close) near.add(j);
       continue;
     }
-    const close = previous.flatMap((p, j) => (overlaps(p, f) ? [j] : []));
     for (const j of close) near.add(j);
     fresh.push(close.length ? { ...f, nearPrevious: close.map((j) => j + 1) } : f);
   }
@@ -276,6 +278,11 @@ export function compareWithPrevious(previous, current) {
 }
 
 const TAG_RE = /\[(F\d+)\]/;
+
+/** Every title a merged finding carries: one per reviewer that reported it. */
+function titlesOf(f) {
+  return [f.title, ...(f.alsoTitles ?? [])].filter((t) => typeof t === "string");
+}
 const LINE_SLACK = 3;
 
 function overlaps(a, b) {
@@ -296,6 +303,7 @@ export function mergeFindings(reviews) {
       const twin = merged.find((m) => m.severity === f.severity && overlaps(m, f) && !m.reviewers.includes(review.reviewer));
       if (twin) {
         twin.reviewers.push(review.reviewer);
+        if (f.title && f.title !== twin.title) (twin.alsoTitles ??= []).push(f.title);
         continue;
       }
       merged.push({ ...f, reviewers: [review.reviewer] });
@@ -339,18 +347,23 @@ export function afterReview(state, reviews, { at, minutesElapsed }) {
   const reflagged = new Set();
 
   for (const f of findings) {
-    const tag = TAG_RE.exec(f.title ?? "")?.[1];
-    const tagged = tag ? state.ledger.find((e) => e.id === tag) : null;
-    if (tagged) {
-      reflagged.add(tagged.id);
-      if (tagged.status === "wontfix" && f.severity === SEVERITY.NIT) continue;
-      escalations.push(["G3", `${tagged.id} re-flagged after the builder answered it (${tagged.status}): ${tagged.title}`]);
+    // A claimed fix or a dispute at the place of any finding is not accepted this pass.
+    const atPlace = state.ledger.filter((e) => (e.status === "claimed_fixed" || e.status === "disputed_internal") && overlaps(e, f));
+    for (const e of atPlace) reflagged.add(e.id);
+    const tags = [...new Set(titlesOf(f).map((t) => TAG_RE.exec(t)?.[1]).filter(Boolean))];
+    const taggedEntries = tags.map((id) => state.ledger.find((e) => e.id === id)).filter(Boolean);
+    if (taggedEntries.length) {
+      for (const tagged of taggedEntries) {
+        reflagged.add(tagged.id);
+        if (tagged.status === "wontfix" && f.severity === SEVERITY.NIT) continue;
+        escalations.push(["G3", `${tagged.id} re-flagged after the builder answered it (${tagged.status}): ${tagged.title}`]);
+      }
       continue;
     }
-    const suspect = state.ledger.find((e) => e.status === "claimed_fixed" && e.source !== "breaker" && overlaps(e, f));
-    if (suspect) {
-      reflagged.add(suspect.id);
-      escalations.push(["G4", `new ${f.severity} at ${f.file}:${f.lineStart} overlaps ${suspect.id}, claimed fixed: ${f.title}`]);
+    // Breaker entries are internal: a reviewer finding at their place is a new finding, not G4.
+    const suspects = atPlace.filter((e) => e.status === "claimed_fixed" && e.source !== "breaker");
+    if (suspects.length) {
+      for (const s of suspects) escalations.push(["G4", `new ${f.severity} at ${f.file}:${f.lineStart} overlaps ${s.id}, claimed fixed: ${f.title}`]);
       fresh.push(f); // recorded as open, so the owner sees it
       continue;
     }

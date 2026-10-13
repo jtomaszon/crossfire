@@ -276,3 +276,22 @@ test("where: lines start at 1 and ranges run forward", () => {
   for (const ok of ["a.js:1", "src/x.mjs:15-20", "a.js:3, b.js:9-9"]) assert.ok(validWhere(ok), ok);
   for (const bad of ["a.js:0", "a.js:20-1", "a.js:0-3", "somewhere", "", "a.js:5, b.js:0"]) assert.ok(!validWhere(bad), bad);
 });
+
+test("re-check: a tagged re-flag keeps its neighbours unclear; tags from every merged reviewer count", () => {
+  const prev = [
+    { severity: "BLOCKER", title: "racy", file: "app.js", lineStart: 10, lineEnd: 10 },
+    { severity: "BLOCKER", title: "neighbour", file: "app.js", lineStart: 12, lineEnd: 12 },
+  ];
+  const d = compareWithPrevious(prev, [{ severity: "BLOCKER", title: "[P1] still racy", file: "app.js", lineStart: 11, lineEnd: 11 }]);
+  assert.deepEqual(d.stillOpen.map((x) => x.previous.index), [1]);
+  assert.deepEqual(d.unclear.map((p) => p.index), [2]);
+  assert.deepEqual(d.resolved, []);
+  const merged = { severity: "BLOCKER", title: "[P1] still racy", alsoTitles: ["[P2] neighbour too"], file: "app.js", lineStart: 11, lineEnd: 11 };
+  assert.deepEqual(compareWithPrevious(prev, [merged]).stillOpen.map((x) => x.previous.index), [1, 2]);
+});
+
+test("the builder result example in the brief passes the where check", () => {
+  const src = fs.readFileSync(new URL("../plugins/crossfire/scripts/lib/briefs.mjs", import.meta.url), "utf8");
+  const example = /where: "([^"]+)"/.exec(src)[1];
+  assert.ok(validWhere(example), example);
+});

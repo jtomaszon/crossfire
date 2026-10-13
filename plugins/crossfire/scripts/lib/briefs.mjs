@@ -53,7 +53,7 @@ export function resultExample(owed) {
               id: e.id,
               status: "FIXED",
               note: "what you changed",
-              where: "path/to/file.ext:120 (file:line of the fix; several separated by commas)",
+              where: "lib/app.rb:120, spec/app_spec.rb:40-52",
               rule: "the broadest rule that still holds, e.g. 'a post-commit decision reads committed state, never the in-memory object'",
               variants: [
                 { scenario: "the reported case", test: "test name in the tree" },
