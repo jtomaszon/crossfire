@@ -827,8 +827,8 @@ function review(ctx, opts) {
 
     const pass = state.reviewPass + 1;
     const focus = buildFocus(state, { specText: readSpec(state.spec) });
-    const at = nowIso();
     const results = reviewers.map((p) => runReviewer(p, { cwd: state.repo, base: state.baseSha, focus, timeoutMs }));
+    const at = nowIso(); // the timeline records when the reviews finished, not when they started
 
     // Reviewers read the live checkout: if HEAD moved meanwhile, they may have read another
     // commit. Discard them before anything is recorded; nothing advances.

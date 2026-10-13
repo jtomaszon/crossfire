@@ -1020,3 +1020,19 @@ test("a FIXED real finding without where (file:line) is refused; a proven attack
   assert.equal(r.status, 3);
   assert.match(r.stdout, /F1: FIXED needs `where`, the file:line of the fix/);
 });
+
+test("the timeline records when the reviews finished, not when they started", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  const next = init(sb);
+  sb.build(next.resultFile);
+  sb.cf("built", "--slug", "demo");
+  sb.queue("codex", approve);
+  sb.queue("grok", approve);
+  sb.env.FAKE_REVIEW_DELAY_MS = "1500";
+  const before = Date.now();
+  sb.cf("review", "--slug", "demo");
+  const state = JSON.parse(fs.readFileSync(`${sb.repo}/.crossfire/runs/demo/state.json`, "utf8"));
+  const recorded = state.history.find((h) => h.event === "review-recorded");
+  assert.ok(Date.parse(recorded.at) - before >= 2500, `recorded ${Date.parse(recorded.at) - before} ms after start: two reviewers of 1.5 s each`);
+});
