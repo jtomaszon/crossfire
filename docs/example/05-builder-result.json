@@ -1,0 +1,169 @@
+{
+  "status": "DONE",
+  "summary": "resolvePublic now decodes the request path exactly once inside try/catch, rejects NUL bytes and backslashes, resolves against the absolute public directory and returns the path only if path.relative shows it is strictly inside public/, otherwise null; it never throws on request input. 16 tests added in test/serve.test.mjs covering E2E-1..3, the plan's Review Focus and both findings.",
+  "commit": "723cc050dcf15287e76baab14315582f7b9db2cd",
+  "tests": [
+    {
+      "name": "public dir is configured",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "serves index.html from public/",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "E2E-1: /index.html and /a%20b.html resolve inside public/",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "relative root is resolved to an absolute path inside public/",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "E2E-2: traversal requests never resolve outside public/",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "F1: reported case /%2e%2e/%2e%2e/etc/passwd returns null",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "F1: plain parent segments that escape return null",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "F1: percent-encoded parent segments and slashes that escape return null",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "F1: parent segments that stay inside public/ are accepted",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "F1: sibling directory sharing the public prefix is rejected",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "F1: the public directory itself is not a file to serve",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "F1: backslash (Windows-style) paths return null",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "F1: NUL bytes return null",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "F1: double-encoded traversal is decoded once and stays literal inside public/",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "E2E-3: % and %ZZ return null without throwing",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "F2: malformed or truncated escapes anywhere in the path return null",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "F2: malformed escape combined with traversal returns null, never a joined path",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "F2: non-string request paths return null without throwing",
+      "command": "npm test",
+      "passed": true
+    }
+  ],
+  "fixes": [
+    {
+      "id": "F1",
+      "status": "FIXED",
+      "note": "Resolve the candidate with path.resolve(path.resolve(root,'public'), './'+decoded) and accept it only when path.relative(base, candidate) is not '', not '..', does not start with '..'+path.sep and is not absolute; reject decoded paths containing NUL or backslash before resolving. The public directory itself ('/', '') returns null since it is not a file (stricter choice, added by me, flagged for the owner). resolvePublic is the only path-building function in src/ (grep for path.join/resolve/decodeURI), so there were no other sites to fix.",
+      "where": "src/serve.mjs:25-33, test/serve.test.mjs:42-100",
+      "rule": "Every filesystem path built from untrusted request input is accepted only after the final, fully resolved path is verified (by path.relative, not string prefix) to lie strictly inside the served base directory, and any input the filesystem could read differently from the check (NUL, backslash) is rejected.",
+      "variants": [
+        {
+          "scenario": "the reported case: /%2e%2e/%2e%2e/etc/passwd",
+          "test": "F1: reported case /%2e%2e/%2e%2e/etc/passwd returns null"
+        },
+        {
+          "scenario": "plain ../ segments, including after a subdirectory",
+          "test": "F1: plain parent segments that escape return null"
+        },
+        {
+          "scenario": "encoded slash and dots (..%2f, %2E%2E%2F)",
+          "test": "F1: percent-encoded parent segments and slashes that escape return null"
+        },
+        {
+          "scenario": "sibling dir sharing the prefix (public-secret) defeats a startsWith check",
+          "test": "F1: sibling directory sharing the public prefix is rejected"
+        },
+        {
+          "scenario": "path resolves to the public dir itself",
+          "test": "F1: the public directory itself is not a file to serve"
+        },
+        {
+          "scenario": "backslash / Windows-style paths, raw and %5c-encoded",
+          "test": "F1: backslash (Windows-style) paths return null"
+        },
+        {
+          "scenario": "NUL byte truncation, raw and %00",
+          "test": "F1: NUL bytes return null"
+        },
+        {
+          "scenario": "double-encoded %252e stays literal (decoded once)",
+          "test": "F1: double-encoded traversal is decoded once and stays literal inside public/"
+        },
+        {
+          "scenario": "spec E2E-2 set",
+          "test": "E2E-2: traversal requests never resolve outside public/"
+        }
+      ]
+    },
+    {
+      "id": "F2",
+      "status": "FIXED",
+      "note": "decodeURIComponent is wrapped in try/catch and a failed decode returns null before any path is built; non-string request paths return null instead of throwing TypeError from decode/path. decodeURIComponent is the only decode call in src/.",
+      "where": "src/serve.mjs:13-21, test/serve.test.mjs:102-125",
+      "rule": "Untrusted request input is validated and decoded without letting any exception escape; any input that cannot be parsed is rejected (null) and never used to build a path.",
+      "variants": [
+        {
+          "scenario": "the reported case: % and %ZZ",
+          "test": "E2E-3: % and %ZZ return null without throwing"
+        },
+        {
+          "scenario": "truncated / invalid UTF-8 / lone-surrogate escapes anywhere in the path (%E0%A4%A, %C3, %ED%A0%80, %2)",
+          "test": "F2: malformed or truncated escapes anywhere in the path return null"
+        },
+        {
+          "scenario": "malformed escape combined with traversal must not be joined",
+          "test": "F2: malformed escape combined with traversal returns null, never a joined path"
+        },
+        {
+          "scenario": "non-string request path (undefined, null, number, object, array)",
+          "test": "F2: non-string request paths return null without throwing"
+        }
+      ]
+    }
+  ]
+}

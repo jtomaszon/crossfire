@@ -1,0 +1,10 @@
+{
+  "reviewer": "grok",
+  "required": false,
+  "seconds": 554,
+  "ok": true,
+  "verdict": "approve",
+  "summary": "Ship. resolvePublic decodes once, rejects a bad escape, NUL, or backslash, and path.relative keeps every accepted path inside <root>/public. F1 and F2 stay fixed; the spec cases neither escape nor throw.",
+  "findings": [],
+  "nextSteps": []
+}

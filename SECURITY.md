@@ -23,6 +23,6 @@ Crossfire itself sends nothing. The tools it drives do, under their own terms:
 | Anthropic (Claude Code) | the orchestrator, builder and breaker are ordinary Claude Code sessions; they read the spec, plan, briefs and the repository's memory, and `crossfire watch` prints PR comment bodies in full into the session | every loop, review and watch |
 | GitHub | `gh` reads the PR's state, comments and reviews | `crossfire watch --pr`, and `/crossfire:review` |
 
-Kept out of git and stored only on your machine: `.crossfire/` (specs, plans, loop runs, checks, the watcher's inbox; ignored through `.git/info/exclude`), `.git/crossfire/memory.md` (titles and rules of past findings, no code), and `~/.local/state/crossfire/reviewers.json` (one-line reviewer errors). Out of git does not mean never sent: parts of the specs, plans, findings and memory reach the services above as the table says.
+Kept out of git and stored only on your machine: `.crossfire/` (specs, plans, loop runs, checks, the watcher's inbox; ignored through `.git/info/exclude`), `.git/crossfire/memory.md` (in the git common directory, shared by every worktree; titles and rules of past findings, no code), and `~/.local/state/crossfire/reviewers.json` (one-line reviewer errors). Out of git does not mean never sent: parts of the specs, plans, findings and memory reach the services above as the table says.
 
 If a repository holds code you may not send to OpenAI or xAI, do not run crossfire's reviews on it.

@@ -1,0 +1,165 @@
+diff --git a/src/serve.mjs b/src/serve.mjs
+index 19164f9..f3a5f52 100644
+--- a/src/serve.mjs
++++ b/src/serve.mjs
+@@ -1,2 +1,34 @@
+ // A tiny static file server's path handling.
++import path from "node:path";
++
+ export const PUBLIC_DIR = "public";
++
++/**
++ * The absolute path of the file to serve for an HTTP request path, or null
++ * when the request is invalid (malformed percent-encoding, NUL bytes,
++ * backslashes, not a string) or would resolve outside `<root>/public`,
++ * including the public directory itself. Never throws on request input.
++ */
++export function resolvePublic(root, requestPath) {
++  if (typeof requestPath !== "string") return null;
++
++  // Decode exactly once; a path that fails to decode is rejected, never joined.
++  let decoded;
++  try {
++    decoded = decodeURIComponent(requestPath);
++  } catch {
++    return null;
++  }
++
++  // NUL bytes and backslashes are read differently by the filesystem (or by
++  // Windows path rules) than by this check: reject them outright.
++  if (decoded.includes("\0") || decoded.includes("\\")) return null;
++
++  const base = path.resolve(root, PUBLIC_DIR);
++  const candidate = path.resolve(base, "." + path.posix.sep + decoded);
++  const rel = path.relative(base, candidate);
++  if (rel === "" || rel === ".." || rel.startsWith(".." + path.sep) || path.isAbsolute(rel)) {
++    return null;
++  }
++  return candidate;
++}
+diff --git a/test/serve.test.mjs b/test/serve.test.mjs
+index e558d33..f4d0d99 100644
+--- a/test/serve.test.mjs
++++ b/test/serve.test.mjs
+@@ -5,3 +5,121 @@ import { PUBLIC_DIR } from "../src/serve.mjs";
+ test("public dir is configured", () => {
+   assert.equal(PUBLIC_DIR, "public");
+ });
++
++import path from "node:path";
++import { resolvePublic } from "../src/serve.mjs";
++
++test("serves index.html from public/", () => {
++  const root = path.resolve("/srv/site");
++  assert.equal(resolvePublic(root, "/index.html"), path.join(root, "public", "index.html"));
++});
++
++// --- fix-traversal: resolvePublic never leaves public/, never throws ---
++
++const ROOT = path.resolve("/srv/site");
++const PUB = path.join(ROOT, "public");
++
++/** True when p is strictly inside PUB (not PUB itself, not a prefix sibling). */
++function inside(p) {
++  const rel = path.relative(PUB, p);
++  return rel !== "" && rel !== ".." && !rel.startsWith(".." + path.sep) && !path.isAbsolute(rel);
++}
++
++// E2E-1 / AC-2
++test("E2E-1: /index.html and /a%20b.html resolve inside public/", () => {
++  assert.equal(resolvePublic(ROOT, "/index.html"), path.join(PUB, "index.html"));
++  assert.equal(resolvePublic(ROOT, "/a%20b.html"), path.join(PUB, "a b.html"));
++  assert.equal(resolvePublic(ROOT, "/docs/guide.html"), path.join(PUB, "docs", "guide.html"));
++});
++
++test("relative root is resolved to an absolute path inside public/", () => {
++  const got = resolvePublic("site", "/index.html");
++  assert.ok(path.isAbsolute(got));
++  assert.equal(got, path.resolve("site", "public", "index.html"));
++});
++
++// E2E-2 / AC-1 / AC-3 (F1 variants)
++test("E2E-2: traversal requests never resolve outside public/", () => {
++  for (const req of ["/../secret.txt", "/%2e%2e/secret.txt", "/..%2fsecret.txt", "/etc/passwd"]) {
++    const got = resolvePublic(ROOT, req);
++    assert.ok(got === null || inside(got), `${req} -> ${got}`);
++  }
++  assert.equal(resolvePublic(ROOT, "/etc/passwd"), path.join(PUB, "etc", "passwd"));
++});
++
++test("F1: reported case /%2e%2e/%2e%2e/etc/passwd returns null", () => {
++  assert.equal(resolvePublic(ROOT, "/%2e%2e/%2e%2e/etc/passwd"), null);
++});
++
++test("F1: plain parent segments that escape return null", () => {
++  assert.equal(resolvePublic(ROOT, "/../secret.txt"), null);
++  assert.equal(resolvePublic(ROOT, "/a/../../secret.txt"), null);
++  assert.equal(resolvePublic(ROOT, ".."), null);
++  assert.equal(resolvePublic(ROOT, "/.."), null);
++});
++
++test("F1: percent-encoded parent segments and slashes that escape return null", () => {
++  assert.equal(resolvePublic(ROOT, "/%2e%2e/secret.txt"), null);
++  assert.equal(resolvePublic(ROOT, "/..%2fsecret.txt"), null);
++  assert.equal(resolvePublic(ROOT, "/%2E%2E%2Fsecret.txt"), null);
++  assert.equal(resolvePublic(ROOT, "/x/%2e%2e%2f%2e%2e%2fsecret.txt"), null);
++});
++
++test("F1: parent segments that stay inside public/ are accepted", () => {
++  assert.equal(resolvePublic(ROOT, "/a/../index.html"), path.join(PUB, "index.html"));
++});
++
++test("F1: sibling directory sharing the public prefix is rejected", () => {
++  assert.equal(resolvePublic(ROOT, "/../public-secret/key.txt"), null);
++  assert.equal(resolvePublic(ROOT, "/%2e%2e/public-secret/key.txt"), null);
++});
++
++test("F1: the public directory itself is not a file to serve", () => {
++  assert.equal(resolvePublic(ROOT, "/"), null);
++  assert.equal(resolvePublic(ROOT, ""), null);
++  assert.equal(resolvePublic(ROOT, "/."), null);
++  assert.equal(resolvePublic(ROOT, "/a/.."), null);
++});
++
++test("F1: backslash (Windows-style) paths return null", () => {
++  assert.equal(resolvePublic(ROOT, "/..\\secret.txt"), null);
++  assert.equal(resolvePublic(ROOT, "/%5c..%5csecret.txt"), null);
++  assert.equal(resolvePublic(ROOT, "\\\\server\\share\\x"), null);
++  assert.equal(resolvePublic(ROOT, "/C:%5cWindows%5cwin.ini"), null);
++});
++
++test("F1: NUL bytes return null", () => {
++  assert.equal(resolvePublic(ROOT, "/index.html%00.png"), null);
++  assert.equal(resolvePublic(ROOT, "/index.html\0"), null);
++});
++
++test("F1: double-encoded traversal is decoded once and stays literal inside public/", () => {
++  assert.equal(resolvePublic(ROOT, "/%252e%252e/secret.txt"), path.join(PUB, "%2e%2e", "secret.txt"));
++  assert.equal(resolvePublic(ROOT, "/%252e%252e%252fsecret.txt"), path.join(PUB, "%2e%2e%2fsecret.txt"));
++});
++
++// E2E-3 / AC-4 (F2 variants)
++test("E2E-3: % and %ZZ return null without throwing", () => {
++  assert.doesNotThrow(() => resolvePublic(ROOT, "%"));
++  assert.equal(resolvePublic(ROOT, "%"), null);
++  assert.equal(resolvePublic(ROOT, "%ZZ"), null);
++});
++
++test("F2: malformed or truncated escapes anywhere in the path return null", () => {
++  for (const req of ["/%", "/index.html%", "/%ZZ.html", "/%E0%A4%A", "/%E0%A4", "/%C3", "/%ED%A0%80", "/%2", "/a%2/b"]) {
++    assert.doesNotThrow(() => resolvePublic(ROOT, req), req);
++    assert.equal(resolvePublic(ROOT, req), null, req);
++  }
++});
++
++test("F2: malformed escape combined with traversal returns null, never a joined path", () => {
++  assert.equal(resolvePublic(ROOT, "/../%ZZ"), null);
++  assert.equal(resolvePublic(ROOT, "/%2e%2e/%"), null);
++});
++
++test("F2: non-string request paths return null without throwing", () => {
++  for (const req of [undefined, null, 42, {}, ["/index.html"]]) {
++    assert.doesNotThrow(() => resolvePublic(ROOT, req));
++    assert.equal(resolvePublic(ROOT, req), null);
++  }
++});

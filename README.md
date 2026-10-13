@@ -46,7 +46,7 @@ Crossfire itself has no telemetry. The tools it drives send data under their own
 - **Anthropic (Claude Code):** the orchestrator, the builder and the breaker are ordinary Claude Code sessions; they read the spec, the plan, the briefs and the repository's memory, and `crossfire watch` prints PR comment bodies in full into the session.
 - **GitHub:** `crossfire watch` and `/crossfire:review` read the PR's state, comments and reviews through `gh`.
 
-Kept out of git (through `.git/info/exclude`) and stored only on your machine: `.crossfire/` (specs, plans, loop runs, checks, the watcher's inbox), `.git/crossfire/memory.md`, and `~/.local/state/crossfire/reviewers.json` (one-line reviewer errors). "Out of git" is not "never sent": parts of these reach the tools above as described. See [SECURITY.md](SECURITY.md).
+Kept out of git (through `.git/info/exclude`) and stored only on your machine: `.crossfire/` (specs, plans, loop runs, checks, the watcher's inbox), `.git/crossfire/memory.md` (in the git common directory, shared by every worktree), and `~/.local/state/crossfire/reviewers.json` (one-line reviewer errors). "Out of git" is not "never sent": parts of these reach the tools above as described. See [SECURITY.md](SECURITY.md).
 
 ### What crossfire will never do
 
@@ -78,6 +78,8 @@ In a git repository, ask Claude for a change and say "crossfire", or run `/cross
    4. Codex (and Grok) review the branch.
    5. Valid findings go straight back to the builder for the next round; the gates below decide when it stops.
 5. Stop on **SHIP** (report of what was found and fixed) or **ESCALATE** (the gate, the reason, the open findings, and your options). It never pushes or merges unless you ask.
+
+For the delivery habits around the loop (small PRs, what "done" means after SHIP, CI as the gate, rollback, runbooks, worktrees), see [docs/workflow.md](docs/workflow.md). A complete example run is in [docs/example/](docs/example/README.md).
 
 ## Review a PR without building anything
 
