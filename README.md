@@ -105,7 +105,7 @@ The check counts as the loop's first review pass.
 | G3 convergence | a reviewer re-flags a finding the builder said it fixed, or the builder disputes a non-nit |
 | G4 suspect | a new finding lands where a fix was just claimed |
 | G5 regression | a brand-new blocker appears at review pass 2 or later |
-| G6 budget | the loop runs past `--max-minutes` (default 45) |
+| G6 budget | `--max-minutes` (default 45) is spent when a new builder leg would start; a finished fix still gets its review (over budget, the breaker leg is skipped), and an approval still ships |
 | G7 nits | only nits are left: one fix pass, then ship without another review |
 
 **Before every review pass, the breaker.** A cold `crossfire:breaker` subagent attacks the round (transactions and rollback, stale in-memory state, concurrency, retries, ordering, missing data) and must prove each attack with a failing test in a throwaway worktree; it never touches the branch. Proven attacks get one harden round before the reviewers see the branch. It is internal: it never escalates, and a builder's dispute goes to the reviewers to judge. The goal is that the cross-vendor review becomes a formality; every report shows whether the first review pass approved. `--breaker off` disables it.
@@ -135,6 +135,7 @@ crossfire proof --slug <s> --e2e <cmd>... [--invariant <cmd>]...   replace a loo
 crossfire review --slug <s>          run Codex (+ Grok), record findings
 crossfire status [--slug <s>]        where a loop is and what comes next
 crossfire report --slug <s>          the SHIP or ESCALATE report
+crossfire ladder --slug <s>          after SHIP: pushed, PR, CI, merged (reads only; never pushes, merges or posts)
 ```
 
 Every command prints a `NEXT ACTION`. Exit codes: 0 ok, 2 usage, 3 malformed (re-ask; nothing advanced), 4 loop already finished, 5 environment (a reviewer is missing or not logged in).
@@ -153,6 +154,7 @@ Both run read-only and return the same review schema. The focus text carries the
 ## Known issues
 
 - **Watch lock takeover under a long pause.** One watcher per PR is enforced with a lock file and a takeover protocol for stale locks. If a watcher is suspended for more than 10 seconds in the middle of taking over a stale lock, a second watcher can take it too (found by a crossfire review, reproduced in simulation). It needs a stale lock, two watchers started for the same PR, and a pause at that instant. An OS-backed exclusive lock would remove it.
+- **`crossfire ladder` reads CI by PR number.** It reads the PR's head before and after reading the checks and reports CI as unknown if the head changed, but a head that moves away and back within those seconds would go unnoticed. Reading check runs by commit would remove it.
 
 ## Develop
 

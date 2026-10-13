@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import * as git from "./lib/git.mjs";
 import { ACTIONS, afterBreak, afterBuild, afterReview, collectFindings, compareWithPrevious, isTerminal, newState, noteMalformed } from "./lib/referee.mjs";
 import { renderBreakerBrief, renderBrief, validateBreakerResult, validateBuildResult } from "./lib/briefs.mjs";
-import { locatePlugins, readiness, usable, OFFICIAL } from "./lib/plugins.mjs";
+import { locatePlugins, readiness, usable, versionSkew, OFFICIAL } from "./lib/plugins.mjs";
 import { buildCheckFocus, buildFocus, readSpec, runReviewer } from "./lib/reviewers.mjs";
 import * as W from "./lib/watch.mjs";
 import { crossfireRoot, ensureExcluded, files, listRuns, loadState, runDir, saveState, withLock } from "./lib/store.mjs";
@@ -16,7 +16,7 @@ import { appendLessons, lessonsBlock, lessonsFromCheck, lessonsFromLoop, memoryF
 import { classifyProofFailure, grokSocketHint, readHealth, recordAttempt, summarize } from "./lib/health.mjs";
 import { CrossfireError, EXIT, atomicWriteJson, minutesBetween, nowIso, readJsonFile, run, runShell, tail, writeText } from "./lib/util.mjs";
 
-const VERSION = "1.1.1";
+const VERSION = "1.2.0";
 
 const USAGE = `crossfire ${VERSION}: referee for a spec-first build -> review -> fix loop
 
@@ -47,6 +47,8 @@ Usage:
                                        run Codex (required) and Grok Build (optional), record findings
   crossfire status [--slug <slug>]     where a loop is, and its next action
   crossfire report --slug <slug>       print the ship or escalation report
+  crossfire ladder --slug <slug> [--remote origin] [--branch <name>] [--repo OWNER/NAME]
+                                       after SHIP: pushed, PR, CI, merged, as facts (reads only)
 
 Every command prints a NEXT ACTION. Follow it; do not decide the next step yourself.
 Global: --cwd <dir> (default: current directory), --json (machine-readable output).
@@ -245,6 +247,8 @@ function doctor(ctx) {
     }
     checks.push({ name: key, ok, required: spec.required, detail, install: ok ? [] : install });
   }
+  const skew = versionSkew(VERSION, plugins.installedSelf);
+  if (skew) checks.unshift({ name: "crossfire", ok: false, required: false, detail: skew });
   const ready = checks.every((c) => c.ok || !c.required);
   const lines = [`crossfire ${VERSION} doctor: ${ready ? "READY" : "NOT READY"}`];
   for (const c of checks) {
@@ -342,6 +346,7 @@ function init(ctx, opts) {
       startedAt: nowIso(),
     });
     state.plan = plan;
+    state.branch = git.branch(repo); // the ladder reads this branch after SHIP
     state.history.push({ at: state.startedAt, event: "init", detail: `base ${base} (${baseSha.slice(0, 12)}), spec ${spec}; preflight: ${preflight}` });
     if (fromCheck) {
       // The check was review pass 1 of the branch as it stands: the loop starts at its fix round.
@@ -351,7 +356,8 @@ function init(ctx, opts) {
       afterReview(state, fromCheck.reviews, { at: state.startedAt, minutesElapsed: 0 });
     }
     saveState(dir, state);
-    emitNext(ctx, dir, state, [`PREFLIGHT: ${preflight}`]);
+    const skew = versionSkew(VERSION, plugins.installedSelf);
+    emitNext(ctx, dir, state, [`PREFLIGHT: ${preflight}`, ...(skew ? [`WARNING: ${skew}`] : [])]);
     return EXIT.OK;
   });
 }
@@ -894,6 +900,140 @@ function report(ctx, opts) {
   return EXIT.OK;
 }
 
+// ---- ladder (read-only, after SHIP) ---------------------------------------
+
+/**
+ * Where a shipped loop's commit is now: pushed, PR, CI, merged. It reports facts and
+ * never recommends an action: what to do next is the person's call. Reads only; never
+ * pushes, merges or posts. Whatever it cannot establish is printed as unknown.
+ */
+function ladder(ctx, opts) {
+  const { state } = requireLoop(ctx.cwd, opts.slug);
+  if (state.terminal?.kind !== "shipped") throw new CrossfireError(`loop ${state.slug} has not shipped (${state.phase}); the ladder starts at SHIP`);
+  const remote = opts.remote ?? "origin";
+  const shipHead = state.lastBuildHead;
+  const branch = opts.branch ?? state.branch; // recorded at init; never the checkout you happen to be on
+  // The loop's base as GitHub names it: "origin/main", "upstream/main" and "refs/heads/main" are "main".
+  const remotes = run("git", ["remote"], { cwd: state.repo }).stdout.split("\n").map((x) => x.trim()).filter(Boolean);
+  let base = String(state.base ?? "").replace(/^refs\/heads\//, "").replace(/^refs\/remotes\//, "");
+  const owner = remotes.find((r) => base.startsWith(`${r}/`));
+  if (owner) base = base.slice(owner.length + 1);
+  if (!shipHead) throw new CrossfireError("this loop recorded no shipped commit");
+  if (!branch || branch === "HEAD") throw new CrossfireError("this loop has no recorded branch (started before 1.2.0, or on a detached HEAD): pass --branch <name>");
+  const short = (sha) => String(sha ?? "").slice(0, 12);
+  const shallow = run("git", ["rev-parse", "--is-shallow-repository"], { cwd: state.repo }).stdout.trim() === "true";
+  /** true, false, or null (unknown: this clone lacks the commit, or its history is shallow). */
+  const contains = (tip) => {
+    if (!tip) return null;
+    if (tip === shipHead) return true;
+    const r = run("git", ["merge-base", "--is-ancestor", shipHead, tip], { cwd: state.repo });
+    if (r.status === 0) return true;
+    return r.status === 1 && !shallow ? false : null;
+  };
+  const rungs = [];
+  const data = { slug: state.slug, branch, base, shipHead, remote, pushed: null, pr: null, ci: null, merged: null };
+
+  // 1. pushed
+  const rs = W.remoteSha(state.repo, remote, `refs/heads/${branch}`);
+  if (rs.error) rungs.push(`1. pushed:  unknown (${rs.error})`);
+  else if (!rs.sha) {
+    data.pushed = false;
+    rungs.push(`1. pushed:  no branch ${branch} on ${remote} (never pushed, or deleted after a merge)`);
+  } else {
+    data.pushed = contains(rs.sha);
+    rungs.push(`1. pushed:  ${data.pushed === true ? (rs.sha === shipHead ? `yes (${remote}/${branch} at ${short(rs.sha)})` : `yes, with later commits on top (${remote}/${branch} at ${short(rs.sha)})`) : data.pushed === false ? `no (${remote}/${branch} is at ${short(rs.sha)}, which does not contain ${short(shipHead)})` : `unknown (${remote}/${branch} is at ${short(rs.sha)}; this clone ${shallow ? "is shallow" : "does not have that commit"}: fetch to compare)`}`);
+  }
+
+  // 2-4 through gh, on the watched remote's own repository (--repo only when it has none)
+  const fromRemote = W.resolveGh(state.repo, remote, null);
+  let target = fromRemote;
+  if (opts.repo) {
+    const explicit = W.resolveGh(state.repo, remote, opts.repo);
+    if (!fromRemote.error && !explicit.error && explicit.nwo.toLowerCase() !== fromRemote.nwo.toLowerCase()) {
+      throw new CrossfireError(`--repo ${opts.repo} is not ${remote}'s repository (${fromRemote.nwo}); the ladder reads the repository the branch is pushed to`);
+    }
+    if (fromRemote.error) target = explicit;
+  }
+  const LIMIT = 100;
+  let prs = null;
+  let why = null;
+  if (target.error) why = target.error;
+  else {
+    const r = run(W.ghBin(), W.ghArgs(target.gh, ["pr", "list", "--head", branch, "--state", "all", "--json", "number,state,url,headRefOid,baseRefName,isDraft,isCrossRepository", "--limit", String(LIMIT)]), { cwd: state.repo, timeoutMs: 30_000 });
+    try {
+      prs = r.status === 0 ? JSON.parse(r.stdout) : null;
+    } catch {
+      prs = null;
+    }
+    if (!Array.isArray(prs)) {
+      prs = null;
+      why = `gh: ${(r.stderr || r.stdout || `exit ${r.status}`).trim().split("\n")[0]}`;
+    }
+  }
+  if (!prs) {
+    rungs.push(`2. PR:      unknown (${why})`, "3. CI:      unknown", "4. merged:  unknown");
+  } else {
+    // Every PR on this branch in this repository, forks included: ancestry decides which carry the commit.
+    const own = prs.map((p) => ({ ...p, has: contains(p.headRefOid) }));
+    const onBase = (p) => !base || p.baseRefName === base;
+    const find = (pred) => own.find(pred) ?? null;
+    const mergedHere = find((p) => p.state === "MERGED" && p.has === true && onBase(p));
+    const mergedUnknown = find((p) => p.state === "MERGED" && p.has === null);
+    const pr = mergedHere ?? mergedUnknown ?? find((p) => p.state === "OPEN" && p.has === true) ?? find((p) => p.state === "CLOSED" && p.has === true) ?? find((p) => p.state === "MERGED" && p.has === true) ?? find((p) => p.has === null);
+    data.pr = pr;
+    const truncatedList = prs.length >= LIMIT;
+    const truncated = truncatedList ? ` (only the newest ${LIMIT} PRs on this branch were read)` : "";
+    // Merged into the loop's base: yes if any PR shows it; unknown if a merged PR's ancestry or the list is incomplete.
+    const mergedFact = mergedHere ? true : mergedUnknown || truncatedList ? null : false;
+    const othersMerged = own.filter((p) => p !== pr && p.state === "MERGED" && p.has !== false);
+    if (!pr) {
+      const others = own.filter((p) => p.has === false);
+      rungs.push(`2. PR:      none from ${branch} contains ${short(shipHead)}${others.length ? ` (other PRs on this branch: ${others.map((p) => `#${p.number} ${p.state.toLowerCase()}`).join(", ")})` : ""}${truncated}`, "3. CI:      -", `4. merged:  ${mergedFact === false ? "no" : "unknown"}`);
+      data.merged = mergedFact;
+    } else if (pr.has === null) {
+      rungs.push(`2. PR:      #${pr.number} ${pr.state.toLowerCase()} into ${pr.baseRefName ?? "?"} ${pr.url}, head ${short(pr.headRefOid)}: unknown whether it contains ${short(shipHead)} (this clone ${shallow ? "is shallow" : "does not have that commit"}: fetch to compare)${truncated}`, "3. CI:      unknown", "4. merged:  unknown");
+    } else {
+      const extra = pr.headRefOid === shipHead ? "head is the shipped commit" : `head ${short(pr.headRefOid)} has commits on top of the shipped commit that this loop did not review`;
+      rungs.push(`2. PR:      #${pr.number} ${pr.state.toLowerCase()}${pr.isDraft ? " (draft)" : ""}${pr.isCrossRepository ? " (from a fork)" : ""} into ${pr.baseRefName ?? "?"} ${pr.url}; ${extra}${othersMerged.length ? `; also merged: ${othersMerged.map((p) => `#${p.number} into ${p.baseRefName}`).join(", ")}` : ""}${truncated}`);
+      // CI for that PR, bound to the head validated above: re-read the head after the checks.
+      const c = run(W.ghBin(), W.ghArgs(target.gh, ["pr", "checks", String(pr.number), "--json", "name,bucket"]), { cwd: state.repo, timeoutMs: 30_000 });
+      const v = run(W.ghBin(), W.ghArgs(target.gh, ["pr", "view", String(pr.number), "--json", "headRefOid,state"]), { cwd: state.repo, timeoutMs: 30_000 });
+      let after = null;
+      try {
+        after = JSON.parse(v.stdout || "null");
+      } catch {
+        after = null;
+      }
+      let checks = null;
+      try {
+        checks = JSON.parse(c.stdout || "null"); // gh exits non-zero while checks fail or are pending
+      } catch {
+        checks = null;
+      }
+      if (!after || after.headRefOid !== pr.headRefOid) rungs.push(`3. CI:      unknown (the PR's head changed while it was being read, or gh could not say: run the ladder again)`);
+      else if (Array.isArray(checks)) {
+        const n = (b) => checks.filter((x) => x.bucket === b).length;
+        data.ci = { total: checks.length, pass: n("pass"), fail: n("fail") + n("cancel"), pending: n("pending"), skipping: n("skipping"), head: pr.headRefOid };
+        rungs.push(`3. CI:      ${checks.length ? `${data.ci.pass} passed, ${data.ci.fail} failed, ${data.ci.pending} pending${data.ci.skipping ? `, ${data.ci.skipping} skipped` : ""}` : "no checks reported yet"} (on ${short(pr.headRefOid)})`);
+      } else if (/no checks/i.test(c.stderr)) {
+        data.ci = { total: 0, pass: 0, fail: 0, pending: 0, skipping: 0, head: pr.headRefOid };
+        rungs.push(`3. CI:      no checks reported yet (on ${short(pr.headRefOid)})`);
+      } else rungs.push(`3. CI:      unknown (gh: ${(c.stderr || `exit ${c.status}`).trim().split("\n")[0]})`);
+      // The state read back last is the newest; if it is missing, merged is unknown unless another PR settles it.
+      const nowState = after && after.headRefOid === pr.headRefOid ? after.state : null;
+      if (mergedFact === true) data.merged = true;
+      else if (nowState === "MERGED" && onBase(pr)) data.merged = true;
+      else if (!nowState) data.merged = null;
+      else data.merged = mergedFact;
+      const where = data.merged === true ? `yes, into ${base || pr.baseRefName}` : data.merged === null ? "unknown" : nowState === "MERGED" || pr.state === "MERGED" ? `into ${pr.baseRefName}, not the loop's base ${base}` : "no";
+      rungs.push(`4. merged:  ${where}`);
+    }
+  }
+  const lines = [`LADDER ${state.slug} · shipped ${short(shipHead)} on ${branch} (base ${base || "?"})${target.nwo ? ` · ${target.gh.host}/${target.nwo}` : ""}`, ...rungs, "Facts only: crossfire does not push, merge, post or recommend; what to do next is your call."];
+  out(ctx, lines.join("\n"), data);
+  return EXIT.OK;
+}
+
 // ---- main ----------------------------------------------------------------
 
 export function main(argv = process.argv.slice(2)) {
@@ -909,7 +1049,7 @@ export function main(argv = process.argv.slice(2)) {
       process.stdout.write(`${USAGE}\n`);
       return cmd || opts.help ? EXIT.OK : EXIT.USAGE;
     }
-    const commands = { doctor: () => doctor(ctx), memory: () => memoryCmd(ctx), check: () => check(ctx, opts), checks: () => checks(ctx), watch: () => watch(ctx, opts), spec: () => specCmd(ctx, opts), proof: () => proof(ctx, opts), attacked: () => attacked(ctx, opts), init: () => init(ctx, opts), built: () => built(ctx, opts), review: () => review(ctx, opts), status: () => status(ctx, opts), report: () => report(ctx, opts) };
+    const commands = { doctor: () => doctor(ctx), memory: () => memoryCmd(ctx), check: () => check(ctx, opts), checks: () => checks(ctx), watch: () => watch(ctx, opts), spec: () => specCmd(ctx, opts), proof: () => proof(ctx, opts), attacked: () => attacked(ctx, opts), init: () => init(ctx, opts), built: () => built(ctx, opts), review: () => review(ctx, opts), status: () => status(ctx, opts), report: () => report(ctx, opts), ladder: () => ladder(ctx, opts) };
     if (!commands[cmd]) throw new CrossfireError(`unknown command "${cmd}"\n\n${USAGE}`);
     return commands[cmd]();
   } catch (e) {

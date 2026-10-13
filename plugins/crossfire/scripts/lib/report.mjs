@@ -47,6 +47,17 @@ export function renderCheckReport(check) {
   return `${out.join("\n")}\n`;
 }
 
+/** Breaker legs as they happened: completed, skipped (malformed twice, or the time budget) or failed. */
+export function breakerTally(state) {
+  const events = state.history ?? [];
+  const skipped = events.filter((h) => h.event === "breaker-skipped").length;
+  const failed = events.filter((h) => h.event === "breaker-failed").length;
+  // A malformed-twice skip and a FAILED breaker still record their round; a budget skip does not.
+  const recordedSkips = events.filter((h) => h.event === "breaker-skipped" && /^malformed/.test(h.detail ?? "")).length;
+  const completed = Math.max(0, (state.breakerRounds ?? []).length - recordedSkips - failed);
+  return { completed, skipped, failed, text: `${completed} pass(es) completed${skipped ? `, ${skipped} skipped` : ""}${failed ? `, ${failed} failed` : ""}` };
+}
+
 export function renderReport(state, { minutesElapsed, changedFiles = [], head = null, reviewersText = null }) {
   const t = state.terminal ?? {};
   const shipped = t.kind === "shipped";
@@ -59,7 +70,7 @@ export function renderReport(state, { minutesElapsed, changedFiles = [], head = 
     `- Builder legs: ${state.round} of ${state.maxRounds}; review passes: ${state.reviewPass}; ${Math.round(minutesElapsed)} of ${state.maxMinutes} min`,
     `- Reviewers: ${reviewersText ?? "not recorded"}`,
     `- First review pass: ${state.firstPass ? (state.firstPass.approved ? "approved, nothing to fix" : `${state.firstPass.findings} finding(s)`) : "no review ran"}`,
-    `- Breaker: ${state.breaker === false ? "off" : `${(state.breakerRounds ?? []).length} pass(es), ${state.ledger.filter((e) => e.source === "breaker").length} proven attack(s)`}`,
+    `- Breaker: ${state.breaker === false ? "off" : `${breakerTally(state).text}, ${state.ledger.filter((e) => e.source === "breaker").length} proven attack(s)`}`,
     "",
     "## Findings",
   ];
@@ -87,7 +98,7 @@ export function renderReport(state, { minutesElapsed, changedFiles = [], head = 
     `- Proof commands crossfire ran itself (last run, round ${state.lastProof?.round ?? "-"}):${state.lastProof?.commands?.length ? "" : " none declared"}`,
     ...(state.lastProof?.commands ?? []).map((c) => `  - \`${c.command}\`: exit ${c.status}`),
     `- Tests the builder named this loop: ${(state.testsNamed ?? []).length}${(state.testsNamed ?? []).length ? ` (${state.testsNamed.slice(0, 12).join(", ")}${state.testsNamed.length > 12 ? ", ..." : ""})` : ""}. Crossfire checks that they pass only through the proof commands above.`,
-    `- Breaker: ${state.breaker === false ? "off" : `${breakerItems.length} attack(s) proven with failing tests; the builder answered ${answered("FIXED")} FIXED and ${answered("DISPUTED")} DISPUTED${unanswered ? `, ${unanswered} unanswered` : ""}${withAnswer.length ? `; ${reviewedN} of these answers went through a later review pass, ${withAnswer.length - reviewedN} did not` : ""}`}`,
+    `- Breaker: ${state.breaker === false ? "off" : `${breakerTally(state).text}; ${breakerItems.length} attack(s) proven with failing tests; the builder answered ${answered("FIXED")} FIXED and ${answered("DISPUTED")} DISPUTED${unanswered ? `, ${unanswered} unanswered` : ""}${withAnswer.length ? `; ${reviewedN} of these answers went through a later review pass, ${withAnswer.length - reviewedN} did not` : ""}`}`,
     `- Reviewers read the branch diff against \`${state.base}\` read-only: ${reviewersText ?? "not recorded"}${reviewerFailures.length ? `; ${reviewerFailures.length} reviewer pass(es) did not complete` : ""}.`,
     "- Not verified by crossfire: anything outside the proof commands (the full test suite, lint, migrations, deploys). CI on the pull request is that gate.",
   );
@@ -117,7 +128,8 @@ export function renderReport(state, { minutesElapsed, changedFiles = [], head = 
         const h = [...e.history].reverse().find((x) => x.reflagged);
         return h ? [`  - ${e.id} re-flagged as: ${h.reflagged}${h.body ? `: ${h.body.split("\n")[0].slice(0, 300)}` : ""}`] : [];
       }),
-      "- Options: accept as is, give the builder a direction and start a new loop on top of this branch, or drop the change.",
+      "- Options: accept as is, give the builder a direction and start a new loop on top of this branch, or drop the change. The person who asked for the change decides, not an agent running the loop.",
+      "- Only if the person said to run unattended may an agent decide, and then: any further code goes through a new crossfire loop; at most one new loop per escalation, and if it escalates too, stop and wait; never push, merge or open a PR for this branch while a BLOCKER or CHANGES finding above is open, re-flagged, disputed, or claimed fixed and not re-reviewed.",
     );
   }
   if (changedFiles.length) out.push("", "## Files changed", ...changedFiles.map((f) => `- ${f}`));
