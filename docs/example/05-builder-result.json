@@ -1,0 +1,178 @@
+{
+  "status": "DONE",
+  "summary": "resolvePublic now decodes once inside try/catch, rejects NUL bytes and backslashes, resolves against an absolute public base and accepts only paths strictly inside it per path.relative; it returns null instead of escaping public/ or throwing.",
+  "commit": "a5445d8ddfe6ee788f71d2a7e2fc5708113ee66c",
+  "tests": [
+    {
+      "name": "public dir is configured",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "serves index.html from public/",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "E2E-1: /index.html and /a%20b.html resolve inside public/",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "E2E-2: traversal and absolute request paths never leave public/",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "E2E-3: malformed percent-encoding returns null without throwing",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "F1: literal ../ traversal (reported case) returns null",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "F1: traversal nested deeper than its start still escapes and returns null",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "F1: percent-encoded traversal (upper/lower case, encoded slash) returns null",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "F1: sibling directory sharing the public prefix is rejected",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "F1: the public directory itself is not a file and returns null",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "F1: double-encoded traversal is decoded once and stays literal inside public/",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "F1: backslash paths (Windows-style input) return null",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "F1: NUL bytes return null",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "F1: absolute-looking request paths are rooted at public/, never the filesystem",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "F1: a relative root is resolved to an absolute public base",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "F2: lone % (reported case) returns null without throwing",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "F2: invalid hex escape returns null without throwing",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "F2: truncated or invalid UTF-8 sequence returns null without throwing",
+      "command": "npm test",
+      "passed": true
+    },
+    {
+      "name": "F2: non-string request paths return null without throwing",
+      "command": "npm test",
+      "passed": true
+    }
+  ],
+  "fixes": [
+    {
+      "id": "F1",
+      "status": "FIXED",
+      "note": "Resolve the request against path.resolve(root,'public') with the decoded path rooted at it, then accept only when path.relative(base,candidate) is non-empty, not '..', does not start with '..'+sep and is not absolute; reject NUL bytes and backslashes before resolving. The public dir itself returns null (not a file). Only src/serve.mjs maps request paths (git grep for decodeURI/path.join/resolve), so this is the one site.",
+      "where": "src/serve.mjs:24, src/serve.mjs:26, src/serve.mjs:28, src/serve.mjs:33",
+      "rule": "a path built from untrusted input is returned only after the final normalized filesystem path is proven (by path.relative, not string prefix) to lie strictly inside the absolute public base, and only from input the filesystem reads the same way the check does",
+      "variants": [
+        {
+          "scenario": "reported case: literal /../secret.txt",
+          "test": "F1: literal ../ traversal (reported case) returns null"
+        },
+        {
+          "scenario": "percent-encoded traversal: %2e%2e, %2E%2E, ..%2f, .%2e",
+          "test": "F1: percent-encoded traversal (upper/lower case, encoded slash) returns null"
+        },
+        {
+          "scenario": "traversal that climbs back out from nested dirs",
+          "test": "F1: traversal nested deeper than its start still escapes and returns null"
+        },
+        {
+          "scenario": "sibling with shared prefix (public-secret) that a startsWith check would pass",
+          "test": "F1: sibling directory sharing the public prefix is rejected"
+        },
+        {
+          "scenario": "path equal to public/ itself ('/', '', '/a/..')",
+          "test": "F1: the public directory itself is not a file and returns null"
+        },
+        {
+          "scenario": "double-encoded %252e%252e decoded once stays literal inside public/",
+          "test": "F1: double-encoded traversal is decoded once and stays literal inside public/"
+        },
+        {
+          "scenario": "backslash (Windows-style) paths, literal and %5c",
+          "test": "F1: backslash paths (Windows-style input) return null"
+        },
+        {
+          "scenario": "NUL bytes, literal and %00",
+          "test": "F1: NUL bytes return null"
+        },
+        {
+          "scenario": "absolute-looking request paths (//etc/passwd, %2fetc) rooted at public/",
+          "test": "F1: absolute-looking request paths are rooted at public/, never the filesystem"
+        },
+        {
+          "scenario": "relative root still yields an absolute contained path",
+          "test": "F1: a relative root is resolved to an absolute public base"
+        }
+      ]
+    },
+    {
+      "id": "F2",
+      "status": "FIXED",
+      "note": "Non-string requestPath returns null; decodeURIComponent (the only throwing call) is wrapped in try/catch returning null. Every remaining operation (includes, path.resolve/relative on strings) cannot throw for string input.",
+      "where": "src/serve.mjs:12, src/serve.mjs:15-20",
+      "rule": "resolvePublic never throws for any requestPath value: every untrusted-input failure is a null (bad request) result",
+      "variants": [
+        {
+          "scenario": "reported case: lone % and % inside a path",
+          "test": "F2: lone % (reported case) returns null without throwing"
+        },
+        {
+          "scenario": "invalid hex escapes %ZZ, %G0, truncated %2",
+          "test": "F2: invalid hex escape returns null without throwing"
+        },
+        {
+          "scenario": "truncated or invalid UTF-8 (%E0%A4%A, %C3, %FF, lone surrogate %ED%A0%80)",
+          "test": "F2: truncated or invalid UTF-8 sequence returns null without throwing"
+        },
+        {
+          "scenario": "non-string inputs (undefined, null, number, object, array, symbol)",
+          "test": "F2: non-string request paths return null without throwing"
+        }
+      ]
+    }
+  ]
+}

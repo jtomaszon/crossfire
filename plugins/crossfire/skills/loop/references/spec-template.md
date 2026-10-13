@@ -55,6 +55,18 @@ Crossfire runs these itself after every builder round; review only starts when a
 - Files or directories the builder must not touch.
 - Owner-built files: small targeted fixes only, no rewrites or restyling.
 - Anything external: no pushes, deploys, sends or purchases.
+- Destructive git: no `reset --hard` on the branch, no history rewrite, no branch deletion.
+- Data: migrations and data changes only against a local or test database; no deleting or truncating real data.
+- Secrets: never read `.env*`, credential files or CI secrets into a prompt, test or commit. A diff that adds something secret-looking is a BLOCKER (a secret scanner such as `gitleaks` works well as an `--invariant`).
+- Network: no calls to production services, no package publishes.
+
+## Rollback
+
+How this change is undone if it misbehaves after it ships: a feature flag to turn off, a plain revert, a revert-safe migration, a reversible backfill. If it cannot be undone cleanly, say so here; that is something the owner must decide before the loop starts.
+
+## Runbook and docs
+
+The runbook or operational doc this change affects, if it touches something people operate, and what must change in it. The builder updates it in the same change.
 
 ## Not in scope
 

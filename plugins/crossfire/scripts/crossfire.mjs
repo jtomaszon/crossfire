@@ -16,7 +16,7 @@ import { appendLessons, lessonsBlock, lessonsFromCheck, lessonsFromLoop, memoryF
 import { classifyProofFailure, grokSocketHint, readHealth, recordAttempt, summarize } from "./lib/health.mjs";
 import { CrossfireError, EXIT, atomicWriteJson, minutesBetween, nowIso, readJsonFile, run, runShell, tail, writeText } from "./lib/util.mjs";
 
-const VERSION = "1.1.0";
+const VERSION = "1.1.1";
 
 const USAGE = `crossfire ${VERSION}: referee for a spec-first build -> review -> fix loop
 

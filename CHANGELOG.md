@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.1
+
+Documentation, from the first outside review.
+
+- `docs/workflow.md`: the habits around the loop: one small PR per change, SHIP is not done (the ladder to live and verified), CI is the gate and the loop is the proof, commit messages that explain why, rollback and runbooks in every spec, worktree hygiene, lessons in memory, name the rule.
+- `docs/example/`: a complete real run (review a PR, spec and plan, a loop started from the review, builder, breaker, both reviewers approve, SHIP), every artifact included.
+- The spec template asks for a **Rollback** and a **Runbook and docs** section, and its Out of bounds lists destructive git, data, secrets and network.
+
 ## 1.1.0
 
 From the first outside review.

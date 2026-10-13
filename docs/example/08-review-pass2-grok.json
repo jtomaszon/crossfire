@@ -1,0 +1,8 @@
+{
+  "reviewer": "grok",
+  "ok": true,
+  "seconds": 617,
+  "verdict": "approve",
+  "summary": "Ship. resolvePublic decodes once, turns malformed escapes into null, and the path.relative jail blocks lexical escapes (encoded .., sibling prefixes, the public directory itself, NUL, and backslash). F1 and F2 are fixed; this diff does not leave a spec or containment hole.",
+  "findings": []
+}

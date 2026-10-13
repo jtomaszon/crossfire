@@ -79,6 +79,8 @@ In a git repository, ask Claude for a change and say "crossfire", or run `/cross
    5. Valid findings go straight back to the builder for the next round; the gates below decide when it stops.
 5. Stop on **SHIP** (report of what was found and fixed) or **ESCALATE** (the gate, the reason, the open findings, and your options). It never pushes or merges unless you ask.
 
+For the delivery habits around the loop (small PRs, what "done" means after SHIP, CI as the gate, rollback, runbooks, worktrees), see [docs/workflow.md](docs/workflow.md). A complete example run is in [docs/example/](docs/example/README.md).
+
 ## Review a PR without building anything
 
 `/crossfire:review <PR number, URL or branch>` reviews what already exists: Claude checks the PR out into its own worktree and runs `crossfire check`, which asks Codex (and Grok when it can run) for one review against the base. No spec, no builder, no loop. You get the `REVIEWERS:` line, the verdict and the findings, with a report in `.crossfire/checks/<id>/`. Nothing is posted to GitHub unless you ask.
