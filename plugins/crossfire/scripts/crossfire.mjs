@@ -939,8 +939,13 @@ function ciForCommit(target, sha, cwd, expected = []) {
     else if (["failure", "error"].includes(x.state)) items.push(["status", x.name, "fail"]);
     else return { error: `status ${x.name} has a state crossfire does not know (${x.state})` };
   }
-  // Required checks that have not reported yet do not exist on the commit: count them as pending.
-  for (const name of expected) if (!items.some(([, n]) => n === name)) items.push(["expected", name, "pending"]);
+  // Checks GitHub still awaits (not created yet, or a rerun queued over an earlier result) are
+  // pending: they replace a settled row of the same kind and name, or are added.
+  for (const { kind, name } of expected) {
+    const row = items.find(([k, n]) => k === kind && n === name);
+    if (row) row[2] = "pending";
+    else items.push([kind, name, "pending"]);
+  }
   const n = (b) => items.filter(([, , x]) => x === b).length;
   return { counts: { total: items.length, pass: n("pass"), fail: n("fail"), pending: n("pending"), skipping: n("skipping") } };
 }
@@ -1041,32 +1046,44 @@ function ladder(ctx, opts) {
       const extra = pr.headRefOid === shipHead ? "head is the shipped commit" : `head ${short(pr.headRefOid)} has commits on top of the shipped commit that this loop did not review`;
       const rung2 = rungs.length;
       rungs.push(`2. PR:      #${pr.number} ${pr.state.toLowerCase()}${pr.isDraft ? " (draft)" : ""}${pr.isCrossRepository ? " (from a fork)" : ""} into ${pr.baseRefName ?? "?"} ${pr.url}; ${extra}${othersMerged.length ? `; also merged: ${othersMerged.map((p) => `#${p.number} into ${p.baseRefName}`).join(", ")}` : ""}${truncated}`);
-      // The PR is read back (head, state, and required checks it still expects), then CI is read
-      // for that exact commit. CI is reported only when the read-back head is the validated one.
-      const v = run(W.ghBin(), W.ghArgs(target.gh, ["pr", "view", String(pr.number), "--json", "headRefOid,state,statusCheckRollup"]), { cwd: state.repo, timeoutMs: 30_000 });
-      let after = null;
-      try {
-        after = v.status === 0 ? JSON.parse(v.stdout || "null") : null;
-      } catch {
-        after = null;
-      }
-      if (!after || typeof after !== "object") {
-        rungs.push(`3. CI:      unknown (could not read PR #${pr.number} back: ${(v.stderr || `exit ${v.status}`).trim().split("\n")[0]})`);
-      } else if (after.headRefOid !== pr.headRefOid) {
+      // The PR is read back (head, state, and the checks it still awaits), CI is read for that exact
+      // commit, then the PR is read once more: CI is reported only if the head held throughout.
+      const view = () => {
+        const v = run(W.ghBin(), W.ghArgs(target.gh, ["pr", "view", String(pr.number), "--json", "headRefOid,state,statusCheckRollup"]), { cwd: state.repo, timeoutMs: 30_000 });
+        try {
+          const j = v.status === 0 ? JSON.parse(v.stdout || "null") : null;
+          return j && typeof j === "object" ? { ok: j } : { error: (v.stderr || `exit ${v.status}`).trim().split("\n")[0] };
+        } catch {
+          return { error: "gh returned something that is not JSON" };
+        }
+      };
+      const moved = (now) => {
         // Nothing read for the old head is a fact about the PR any more.
-        data.headNow = after.headRefOid;
-        data.pr = { ...pr, headRefOid: after.headRefOid, headMoved: true };
-        rungs[rung2] = `2. PR:      #${pr.number} ${pr.url}: its head moved from ${short(pr.headRefOid)} to ${short(after.headRefOid)} while the ladder read it; unknown whether it contains ${short(shipHead)}: run the ladder again`;
+        data.headNow = now.headRefOid;
+        data.pr = { number: pr.number, url: pr.url, baseRefName: pr.baseRefName, state: now.state ?? null, headRefOid: now.headRefOid, headMoved: true, has: null };
+        rungs[rung2] = `2. PR:      #${pr.number} ${pr.url}: its head moved from ${short(pr.headRefOid)} to ${short(now.headRefOid)} while the ladder read it; unknown whether it contains ${short(shipHead)}: run the ladder again`;
         rungs.push("3. CI:      unknown (the PR's head moved)");
-      } else {
+      };
+      const first = view();
+      let after = first.ok ?? null;
+      if (!after) rungs.push(`3. CI:      unknown (could not read PR #${pr.number} back: ${first.error})`);
+      else if (after.headRefOid !== pr.headRefOid) moved(after);
+      else {
         const rollup = Array.isArray(after.statusCheckRollup) ? after.statusCheckRollup : null;
+        const awaited = (c) => c?.state === "EXPECTED" || (c?.__typename === "CheckRun" && ["QUEUED", "REQUESTED", "WAITING", "PENDING", "IN_PROGRESS"].includes(c.status));
+        const expected = (rollup ?? []).filter(awaited).map((c) => ({ kind: c.__typename === "CheckRun" ? "run" : "status", name: c.context ?? c.name })).filter((e) => e.name);
         // gh reads at most 100 rollup entries; past that, a check still awaited could be missing.
-        const expected = rollup
-          ? rollup.filter((c) => c?.state === "EXPECTED" || (c?.__typename === "CheckRun" && ["QUEUED", "REQUESTED", "WAITING", "PENDING", "IN_PROGRESS"].includes(c.status))).map((c) => c.context ?? c.name).filter(Boolean)
-          : [];
         const ci = !rollup || rollup.length >= 100 ? { error: !rollup ? "the PR's check rollup could not be read" : "the PR has 100 or more checks, more than crossfire can confirm complete" } : ciForCommit(target, pr.headRefOid, state.repo, expected);
+        const second = ci.error ? null : view();
         if (ci.error) rungs.push(`3. CI:      unknown (${ci.error})`);
-        else {
+        else if (!second.ok) {
+          after = null;
+          rungs.push(`3. CI:      unknown (could not read PR #${pr.number} back after reading its checks: ${second.error})`);
+        } else if (second.ok.headRefOid !== pr.headRefOid) {
+          after = second.ok;
+          moved(after);
+        } else {
+          after = second.ok;
           data.ci = { ...ci.counts, head: pr.headRefOid };
           const c = ci.counts;
           rungs.push(`3. CI:      ${c.total ? `${c.pass} passed, ${c.fail} failed, ${c.pending} pending${c.skipping ? `, ${c.skipping} skipped` : ""}` : "no checks reported yet"} (on ${short(pr.headRefOid)})`);

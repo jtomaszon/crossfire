@@ -1133,6 +1133,14 @@ test("ladder: after SHIP it reports pushed, PR, CI and merged as facts, and neve
   fs.writeFileSync(`${d}/check-runs.jsonl`, jsonl([{ name: "test", status: "completed", conclusion: "success" }]));
   fs.writeFileSync(`${d}/rollup.json`, JSON.stringify([{ __typename: "CheckRun", name: "deploy-preview", status: "QUEUED" }]));
   assert.match(ladder().stdout, /3\. CI: +1 passed, 1 failed, 1 pending/);
+  // A rerun queued over a finished run of the same name: pending, not the old pass.
+  fs.writeFileSync(`${d}/rollup.json`, JSON.stringify([{ __typename: "CheckRun", name: "test", status: "QUEUED" }]));
+  assert.match(ladder().stdout, /3\. CI: +0 passed, 1 failed, 1 pending/);
+  // A queued check run and a commit status that share a name are different checks.
+  fs.writeFileSync(`${d}/statuses.jsonl`, jsonl([{ name: "deploy", state: "success" }]));
+  fs.writeFileSync(`${d}/rollup.json`, JSON.stringify([{ __typename: "CheckRun", name: "deploy", status: "QUEUED" }]));
+  assert.match(ladder().stdout, /3\. CI: +2 passed, 0 failed, 1 pending/);
+  fs.writeFileSync(`${d}/statuses.jsonl`, jsonl([{ name: "ci/legacy", state: "failure" }]));
   // 100 or more rollup entries: too many to confirm complete.
   fs.writeFileSync(`${d}/rollup.json`, JSON.stringify(Array.from({ length: 100 }, (_, i) => ({ __typename: "StatusContext", context: `c${i}`, state: "SUCCESS" }))));
   assert.match(ladder().stdout, /3\. CI: +unknown \(the PR has 100 or more checks/);
@@ -1153,6 +1161,17 @@ test("ladder: after SHIP it reports pushed, PR, CI and merged as facts, and neve
   assert.equal(j.ci, null);
   assert.equal(j.headNow, "2".repeat(40));
   assert.equal(j.pr.headRefOid, "2".repeat(40), "the JSON never keeps the old head as current");
+  assert.equal(j.pr.has, null, "nor its ancestry");
+  fs.rmSync(`${d}/moved-head`);
+
+  // The head moves while the checks are being read (after the first read-back): CI unknown.
+  fs.writeFileSync(`${d}/view-reads`, "0");
+  fs.writeFileSync(`${d}/moved-head-later`, "4".repeat(40));
+  r = ladder();
+  assert.match(r.stdout, /its head moved from [0-9a-f]{12} to 444444444444/);
+  assert.match(r.stdout, /3\. CI: +unknown \(the PR's head moved\)/);
+  fs.rmSync(`${d}/moved-head-later`);
+  fs.writeFileSync(`${d}/moved-head`, "2".repeat(40)); // restored for the cleanup below
   fs.rmSync(`${d}/moved-head`);
   fs.rmSync(`${d}/statuses.jsonl`);
   fs.rmSync(`${d}/check-runs.jsonl`);

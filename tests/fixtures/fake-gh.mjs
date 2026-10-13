@@ -26,7 +26,10 @@ else if (args[0] === "pr" && args[1] === "view" && args.some((a) => a.startsWith
     process.exit(1);
   }
   const pr = JSON.parse(read("prs.json", "[]")).find((p) => String(p.number) === args[2]);
-  const moved = read("moved-head", "").trim();
+  // moved-head moves it on every read; moved-head-later only from the second read on.
+  const reads = Number(read("view-reads", "0")) + 1;
+  fs.writeFileSync(path.join(dir, "view-reads"), String(reads));
+  const moved = read("moved-head", "").trim() || (reads >= 2 ? read("moved-head-later", "").trim() : "");
   process.stdout.write(JSON.stringify(pr ? { headRefOid: moved || pr.headRefOid, state: read("view-state", "").trim() || pr.state, statusCheckRollup: JSON.parse(read("rollup.json", "[]")) } : null));
 } else if (args[0] === "pr" && args[1] === "view") process.stdout.write(`${read("state", "OPEN").trim()}\n`);
 else if (args[0] === "pr" && args[1] === "list") process.stdout.write(read("prs.json", "[]"));
