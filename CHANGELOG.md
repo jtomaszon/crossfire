@@ -11,6 +11,13 @@ From the first outside review.
 - `where` accepts line ranges (`src/serve.mjs:15-20`) and lists (`a.mjs:3, b.mjs:9`); a pre-release refused ranges.
 - The timeline records a review pass when the reviewers finish, not when they start.
 
+Found by reading real loops on a second machine:
+
+- **Fix: a G6 (time budget) escalation right after the breaker dropped its proven attacks,** and the report said "Nothing else is open". The attacks are now recorded before the budget is checked.
+- Escalation reports list findings the builder claimed fixed that no reviewer re-checked ("Claimed fixed by the builder, not re-reviewed").
+- `REVIEWERS: codex 1/1 passes (last verdict: needs-attention)`: "1/1 passes" counts reviews that ran, and was being read as "approved".
+- `crossfire --version` works (it failed with "--version needs a value").
+
 ## 1.0.1
 
 Public-repository hygiene, from the first outside review.

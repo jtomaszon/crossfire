@@ -85,11 +85,13 @@ export function renderReport(state, { minutesElapsed, changedFiles = [], head = 
   if (accepted.length) out.push("", `Accepted nits (G7, not re-reviewed): ${accepted.map((e) => e.id).join(", ")}`);
   if (!shipped) {
     const open = [...openAboveNit(state), ...openNits(state)];
+    const unreviewed = state.ledger.filter((e) => e.status === "claimed_fixed" && e.severity !== "NIT");
     out.push(
       "",
       "## What the owner needs to decide",
       `- Gate ${t.gate}: ${t.reason}`,
       open.length ? `- Still open: ${open.map((e) => `${e.id} (${e.severity})`).join(", ")}` : "- Nothing else is open.",
+      ...(unreviewed.length ? [`- Claimed fixed by the builder, not re-reviewed: ${unreviewed.map((e) => `${e.id} (${e.severity})`).join(", ")}`] : []),
       "- Options: accept as is, give the builder a direction and start a new loop on top of this branch, or drop the change.",
     );
   }

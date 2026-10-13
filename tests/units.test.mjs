@@ -244,3 +244,11 @@ test("where accepts lines and ranges, one or several; not a bare file or prose",
   for (const ok of ["src/a.mjs:12", "src/a.mjs:15-20", "src/a.mjs:24, src/a.mjs:15-20", "test/a_test.rb:3,lib/a.rb:9-11"]) assert.ok(WHERE_RE.test(ok), ok);
   for (const bad of ["somewhere", "src/a.mjs", "src/a.mjs:", "src/a.mjs:12-", "near line 12"]) assert.ok(!WHERE_RE.test(bad), bad);
 });
+
+import { reviewersLine } from "../plugins/crossfire/scripts/crossfire.mjs";
+
+test("REVIEWERS says the last verdict when it was not an approval, so 1/1 passes is not read as approved", () => {
+  const line = reviewersLine({ reviewPass: 1, reviewerRuns: [{ pass: 1, reviewer: "codex", ok: true, verdict: "needs-attention" }] });
+  assert.equal(line, "codex 1/1 passes (last verdict: needs-attention)");
+  assert.equal(reviewersLine({ reviewPass: 1, reviewerRuns: [{ pass: 1, reviewer: "codex", ok: true, verdict: "approve" }] }), "codex 1/1 passes");
+});

@@ -54,7 +54,7 @@ Exit codes: 0 ok, 2 usage, 3 malformed (re-ask, nothing advanced), 4 loop alread
 
 function parseArgs(argv) {
   const repeat = new Set(["e2e", "invariant", "from", "ack"]);
-  const bool = new Set(["json", "force", "help", "no-preflight", "no-failure-modes", "reset-cursor", "ack-only"]);
+  const bool = new Set(["json", "force", "help", "no-preflight", "no-failure-modes", "reset-cursor", "ack-only", "version"]);
   const opts = { e2e: [], invariant: [], from: [], ack: [] };
   const pos = [];
   for (let i = 0; i < argv.length; i += 1) {
@@ -144,7 +144,9 @@ export function reviewersLine(state) {
       const mine = runs.filter((r) => r.reviewer === name);
       const ok = mine.filter((r) => r.ok).length;
       const fail = [...mine].reverse().find((r) => !r.ok);
-      return `${name} ${ok}/${passes} passes${ok < passes && fail ? ` (${fail.skipped ? "not usable" : "failed"}: ${fail.error})` : ""}`;
+      const last = [...mine].reverse().find((r) => r.ok);
+      const verdict = last?.verdict && last.verdict !== "approve" ? ` (last verdict: ${last.verdict})` : "";
+      return `${name} ${ok}/${passes} passes${verdict}${ok < passes && fail ? ` (${fail.skipped ? "not usable" : "failed"}: ${fail.error})` : ""}`;
     })
     .join(", ");
 }
@@ -899,13 +901,13 @@ export function main(argv = process.argv.slice(2)) {
   try {
     const { cmd, opts } = parseArgs(argv);
     ctx = { json: Boolean(opts.json), cwd: path.resolve(opts.cwd ?? process.cwd()) };
+    if (opts.version || cmd === "version") {
+      process.stdout.write(`${VERSION}\n`);
+      return EXIT.OK;
+    }
     if (!cmd || opts.help || cmd === "help") {
       process.stdout.write(`${USAGE}\n`);
       return cmd || opts.help ? EXIT.OK : EXIT.USAGE;
-    }
-    if (cmd === "--version" || cmd === "version") {
-      process.stdout.write(`${VERSION}\n`);
-      return EXIT.OK;
     }
     const commands = { doctor: () => doctor(ctx), memory: () => memoryCmd(ctx), check: () => check(ctx, opts), checks: () => checks(ctx), watch: () => watch(ctx, opts), spec: () => specCmd(ctx, opts), proof: () => proof(ctx, opts), attacked: () => attacked(ctx, opts), init: () => init(ctx, opts), built: () => built(ctx, opts), review: () => review(ctx, opts), status: () => status(ctx, opts), report: () => report(ctx, opts) };
     if (!commands[cmd]) throw new CrossfireError(`unknown command "${cmd}"\n\n${USAGE}`);

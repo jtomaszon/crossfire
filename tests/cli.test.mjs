@@ -392,7 +392,7 @@ test("check: reviews a branch once with no spec, no builder and no loop", (t) =>
   const r = sb.cf("check", "--base", "main", "--focus", "PR: print v2 on start", "--name", "pr-1");
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /CHECK pr-1 · feature [0-9a-f]{12} against main/);
-  assert.match(r.stdout, /REVIEWERS: codex 1\/1 passes, grok 1\/1 passes/);
+  assert.match(r.stdout, /REVIEWERS: codex 1\/1 passes \(last verdict: needs-attention\), grok 1\/1 passes/);
   assert.match(r.stdout, /VERDICT: 2 finding\(s\): 1 blocker, 0 changes, 1 nit/);
   assert.match(r.stdout, /TO FIX WITH A LOOP: .*--from-check pr-1/);
   assert.match(sb.calls("codex").at(-1).at(-1), /PR: print v2 on start/);
@@ -1035,4 +1035,10 @@ test("the timeline records when the reviews finished, not when they started", (t
   const state = JSON.parse(fs.readFileSync(`${sb.repo}/.crossfire/runs/demo/state.json`, "utf8"));
   const recorded = state.history.find((h) => h.event === "review-recorded");
   assert.ok(Date.parse(recorded.at) - before >= 2500, `recorded ${Date.parse(recorded.at) - before} ms after start: two reviewers of 1.5 s each`);
+});
+
+test("crossfire --version prints the version", () => {
+  const r = spawnSync(process.execPath, [new URL("../plugins/crossfire/scripts/crossfire.mjs", import.meta.url).pathname, "--version"], { encoding: "utf8" });
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /^\d+\.\d+\.\d+\n$/);
 });

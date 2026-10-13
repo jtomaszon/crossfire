@@ -210,9 +210,6 @@ export function afterBuild(state, result, g0, { at, minutesElapsed }) {
 export function afterBreak(state, attacks, { at, minutesElapsed }) {
   state.breakerRounds.push(state.round);
   log(state, at, "break-recorded", `round ${state.round}: ${attacks.length} proven attack(s)`);
-  if (overBudget(state, minutesElapsed)) {
-    return escalate(state, at, "G6", `wall-clock budget of ${state.maxMinutes} min spent`);
-  }
   for (const a of attacks) {
     state.ledger.push({
       id: nextId(state, "B"),
@@ -229,6 +226,10 @@ export function afterBreak(state, attacks, { at, minutesElapsed }) {
       raisedPass: state.reviewPass,
       history: [],
     });
+  }
+  // The budget is checked after the attacks are in the ledger, so an escalation reports them.
+  if (overBudget(state, minutesElapsed)) {
+    return escalate(state, at, "G6", `wall-clock budget of ${state.maxMinutes} min spent`);
   }
   if (attacks.length) {
     state.phase = "harden";

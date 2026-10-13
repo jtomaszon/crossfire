@@ -199,3 +199,26 @@ test("first review pass outcome is recorded (the number to watch)", () => {
   afterReview(s2, [codex([f("CHANGES", "x")])], t);
   assert.deepEqual(s2.firstPass, { approved: false, findings: 1 });
 });
+
+import { renderReport } from "../plugins/crossfire/scripts/lib/report.mjs";
+
+test("G6 right after the breaker: its proven attacks are in the ledger and the escalation report", () => {
+  const s = fresh({ breaker: true, maxMinutes: 10 });
+  afterBuild(s, done(), green, t);
+  const next = afterBreak(s, [attack("nested rollback loses the flag")], { at, minutesElapsed: 11 });
+  assert.equal(next.gate, "G6");
+  assert.equal(s.ledger[0].id, "B1");
+  const report = renderReport(s, { minutesElapsed: 11 });
+  assert.match(report, /Still open: B1 \(BLOCKER\)/);
+  assert.doesNotMatch(report, /Nothing else is open/);
+});
+
+test("an escalation report lists findings the builder claimed fixed that no reviewer re-checked", () => {
+  const s = fresh({ maxMinutes: 10 });
+  afterBuild(s, done(), green, t);
+  afterReview(s, [codex([f("BLOCKER", "hole")])], t);
+  const next = afterBuild(s, done([{ id: "F1", status: "FIXED", where: "a.js:10" }]), green, { at, minutesElapsed: 11 });
+  assert.equal(next.gate, "G6");
+  const report = renderReport(s, { minutesElapsed: 11 });
+  assert.match(report, /Claimed fixed by the builder, not re-reviewed: F1 \(BLOCKER\)/);
+});
