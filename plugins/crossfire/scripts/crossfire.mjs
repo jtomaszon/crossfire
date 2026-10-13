@@ -48,7 +48,7 @@ Usage:
   crossfire status [--slug <slug>]     where a loop is, and its next action
   crossfire report --slug <slug>       print the ship or escalation report
   crossfire ladder --slug <slug> [--remote origin] [--branch <name>] [--repo OWNER/NAME]
-                                       after SHIP: is it pushed, is there a PR, CI, merged (reads only)
+                                       after SHIP: pushed, PR, CI, merged, as facts (reads only)
 
 Every command prints a NEXT ACTION. Follow it; do not decide the next step yourself.
 Global: --cwd <dir> (default: current directory), --json (machine-readable output).
@@ -903,9 +903,9 @@ function report(ctx, opts) {
 // ---- ladder (read-only, after SHIP) ---------------------------------------
 
 /**
- * Where a shipped loop's commit is now: pushed, PR, CI, merged. Reads only; never pushes,
- * merges or posts. Anything it cannot establish is "unknown", and the next step is then to
- * retry or fetch, never to push, open or merge on a guess.
+ * Where a shipped loop's commit is now: pushed, PR, CI, merged. It reports facts and
+ * never recommends an action: what to do next is the person's call. Reads only; never
+ * pushes, merges or posts. Whatever it cannot establish is printed as unknown.
  */
 function ladder(ctx, opts) {
   const { state } = requireLoop(ctx.cwd, opts.slug);
@@ -913,18 +913,22 @@ function ladder(ctx, opts) {
   const remote = opts.remote ?? "origin";
   const shipHead = state.lastBuildHead;
   const branch = opts.branch ?? state.branch ?? git.branch(state.repo);
+  // The loop's base as a branch name on the remote: "origin/main" and "refs/heads/main" are "main".
+  const base = String(state.base ?? "").replace(/^refs\/heads\//, "").replace(/^refs\/remotes\//, "").replace(new RegExp(`^${remote.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/`), "");
   if (!shipHead) throw new CrossfireError("this loop recorded no shipped commit");
   if (!branch || branch === "HEAD") throw new CrossfireError("cannot tell the loop's branch (detached HEAD, or a loop started before 1.2.0): pass --branch <name>");
   const short = (sha) => String(sha ?? "").slice(0, 12);
-  /** true, false, or null when this clone does not have the commit to compare. */
+  const shallow = run("git", ["rev-parse", "--is-shallow-repository"], { cwd: state.repo }).stdout.trim() === "true";
+  /** true, false, or null (unknown: this clone lacks the commit, or its history is shallow). */
   const contains = (tip) => {
     if (!tip) return null;
     if (tip === shipHead) return true;
     const r = run("git", ["merge-base", "--is-ancestor", shipHead, tip], { cwd: state.repo });
-    return r.status === 0 ? true : r.status === 1 ? false : null;
+    if (r.status === 0) return true;
+    return r.status === 1 && !shallow ? false : null;
   };
   const rungs = [];
-  const data = { slug: state.slug, branch, shipHead, remote, pushed: null, pr: null, prLookup: "unknown", ci: null, merged: null };
+  const data = { slug: state.slug, branch, base, shipHead, remote, pushed: null, pr: null, ci: null, merged: null };
 
   // 1. pushed
   const rs = W.remoteSha(state.repo, remote, `refs/heads/${branch}`);
@@ -934,16 +938,25 @@ function ladder(ctx, opts) {
     rungs.push(`1. pushed:  no branch ${branch} on ${remote} (never pushed, or deleted after a merge)`);
   } else {
     data.pushed = contains(rs.sha);
-    rungs.push(`1. pushed:  ${data.pushed === true ? (rs.sha === shipHead ? `yes (${remote}/${branch} at ${short(rs.sha)})` : `yes, with later commits on top (${remote}/${branch} at ${short(rs.sha)})`) : data.pushed === false ? `no (${remote}/${branch} is at ${short(rs.sha)}, which does not contain ${short(shipHead)})` : `unknown (${remote}/${branch} is at ${short(rs.sha)}, which this clone does not have: fetch, then run the ladder again)`}`);
+    rungs.push(`1. pushed:  ${data.pushed === true ? (rs.sha === shipHead ? `yes (${remote}/${branch} at ${short(rs.sha)})` : `yes, with later commits on top (${remote}/${branch} at ${short(rs.sha)})`) : data.pushed === false ? `no (${remote}/${branch} is at ${short(rs.sha)}, which does not contain ${short(shipHead)})` : `unknown (${remote}/${branch} is at ${short(rs.sha)}; this clone ${shallow ? "is shallow" : "does not have that commit"}: fetch to compare)`}`);
   }
 
-  // 2-4 through gh, on the remote's own repository; same-repository PRs only
-  const target = W.resolveGh(state.repo, remote, opts.repo ?? null);
+  // 2-4 through gh, on the watched remote's own repository (--repo only when it has none)
+  const fromRemote = W.resolveGh(state.repo, remote, null);
+  let target = fromRemote;
+  if (opts.repo) {
+    const explicit = W.resolveGh(state.repo, remote, opts.repo);
+    if (!fromRemote.error && !explicit.error && explicit.nwo.toLowerCase() !== fromRemote.nwo.toLowerCase()) {
+      throw new CrossfireError(`--repo ${opts.repo} is not ${remote}'s repository (${fromRemote.nwo}); the ladder reads the repository the branch is pushed to`);
+    }
+    if (fromRemote.error) target = explicit;
+  }
+  const LIMIT = 100;
   let prs = null;
   let why = null;
   if (target.error) why = target.error;
   else {
-    const r = run(W.ghBin(), W.ghArgs(target.gh, ["pr", "list", "--head", branch, "--state", "all", "--json", "number,state,url,headRefOid,isDraft,isCrossRepository", "--limit", "30"]), { cwd: state.repo, timeoutMs: 30_000 });
+    const r = run(W.ghBin(), W.ghArgs(target.gh, ["pr", "list", "--head", branch, "--state", "all", "--json", "number,state,url,headRefOid,baseRefName,isDraft,isCrossRepository", "--limit", String(LIMIT)]), { cwd: state.repo, timeoutMs: 30_000 });
     try {
       prs = r.status === 0 ? JSON.parse(r.stdout) : null;
     } catch {
@@ -957,56 +970,51 @@ function ladder(ctx, opts) {
   if (!prs) {
     rungs.push(`2. PR:      unknown (${why})`, "3. CI:      unknown", "4. merged:  unknown");
   } else {
-    data.prLookup = "ok";
     const own = prs.filter((p) => !p.isCrossRepository).map((p) => ({ ...p, has: contains(p.headRefOid) }));
     const pick = (st) => own.find((p) => p.state === st && p.has === true);
-    const pr = pick("MERGED") ?? pick("OPEN") ?? own.find((p) => p.has === null) ?? null;
-    const others = own.filter((p) => p !== pr && p.has === false);
+    const pr = pick("MERGED") ?? pick("OPEN") ?? pick("CLOSED") ?? own.find((p) => p.has === null) ?? null;
     data.pr = pr;
+    const truncated = prs.length >= LIMIT ? ` (only the newest ${LIMIT} PRs on this branch were read)` : "";
     if (!pr) {
-      rungs.push(`2. PR:      none from ${branch} contains ${short(shipHead)}${others.length ? ` (other PRs on this branch: ${others.map((p) => `#${p.number} ${p.state.toLowerCase()}`).join(", ")})` : ""}`, "3. CI:      -", "4. merged:  no");
-      data.merged = false;
+      const others = own.filter((p) => p.has === false);
+      rungs.push(`2. PR:      none from ${branch} contains ${short(shipHead)}${others.length ? ` (other PRs on this branch: ${others.map((p) => `#${p.number} ${p.state.toLowerCase()}`).join(", ")})` : ""}${truncated}`, "3. CI:      -", `4. merged:  ${truncated ? "unknown" : "no"}`);
+      data.merged = truncated ? null : false;
     } else if (pr.has === null) {
-      rungs.push(`2. PR:      #${pr.number} ${pr.state.toLowerCase()} ${pr.url}, head ${short(pr.headRefOid)}, which this clone does not have: unknown whether it contains ${short(shipHead)}`, "3. CI:      unknown", "4. merged:  unknown");
+      rungs.push(`2. PR:      #${pr.number} ${pr.state.toLowerCase()} ${pr.url}, head ${short(pr.headRefOid)}: unknown whether it contains ${short(shipHead)} (this clone ${shallow ? "is shallow" : "does not have that commit"})`, "3. CI:      unknown", "4. merged:  unknown");
     } else {
-      rungs.push(`2. PR:      #${pr.number} ${pr.state.toLowerCase()}${pr.isDraft ? " (draft)" : ""} ${pr.url}`);
+      const extra = pr.headRefOid === shipHead ? "head is the shipped commit" : `head ${short(pr.headRefOid)} has commits on top of the shipped commit that this loop did not review`;
+      rungs.push(`2. PR:      #${pr.number} ${pr.state.toLowerCase()}${pr.isDraft ? " (draft)" : ""} into ${pr.baseRefName ?? "?"} ${pr.url}; ${extra}`);
+      // CI for that PR, bound to the head validated above: re-read the head after the checks.
       const c = run(W.ghBin(), W.ghArgs(target.gh, ["pr", "checks", String(pr.number), "--json", "name,bucket"]), { cwd: state.repo, timeoutMs: 30_000 });
+      const v = run(W.ghBin(), W.ghArgs(target.gh, ["pr", "view", String(pr.number), "--json", "headRefOid,state"]), { cwd: state.repo, timeoutMs: 30_000 });
+      let after = null;
+      try {
+        after = JSON.parse(v.stdout || "null");
+      } catch {
+        after = null;
+      }
       let checks = null;
       try {
         checks = JSON.parse(c.stdout || "null"); // gh exits non-zero while checks fail or are pending
       } catch {
         checks = null;
       }
-      if (Array.isArray(checks)) {
+      if (!after || after.headRefOid !== pr.headRefOid) rungs.push(`3. CI:      unknown (the PR's head changed while it was being read, or gh could not say: run the ladder again)`);
+      else if (Array.isArray(checks)) {
         const n = (b) => checks.filter((x) => x.bucket === b).length;
-        data.ci = { total: checks.length, pass: n("pass"), fail: n("fail") + n("cancel"), pending: n("pending"), skipping: n("skipping") };
-        rungs.push(`3. CI:      ${checks.length ? `${data.ci.pass} passed, ${data.ci.fail} failed, ${data.ci.pending} pending${data.ci.skipping ? `, ${data.ci.skipping} skipped` : ""}` : "no checks on this PR"}`);
+        data.ci = { total: checks.length, pass: n("pass"), fail: n("fail") + n("cancel"), pending: n("pending"), skipping: n("skipping"), head: pr.headRefOid };
+        rungs.push(`3. CI:      ${checks.length ? `${data.ci.pass} passed, ${data.ci.fail} failed, ${data.ci.pending} pending${data.ci.skipping ? `, ${data.ci.skipping} skipped` : ""}` : "no checks reported yet"} (on ${short(pr.headRefOid)})`);
       } else if (/no checks/i.test(c.stderr)) {
-        data.ci = { total: 0, pass: 0, fail: 0, pending: 0, skipping: 0 };
-        rungs.push("3. CI:      no checks on this PR");
+        data.ci = { total: 0, pass: 0, fail: 0, pending: 0, skipping: 0, head: pr.headRefOid };
+        rungs.push(`3. CI:      no checks reported yet (on ${short(pr.headRefOid)})`);
       } else rungs.push(`3. CI:      unknown (gh: ${(c.stderr || `exit ${c.status}`).trim().split("\n")[0]})`);
-      data.merged = pr.state === "MERGED";
-      rungs.push(`4. merged:  ${data.merged ? "yes" : "no"}`);
+      const intoBase = !base || pr.baseRefName === base;
+      data.merged = pr.state === "MERGED" ? intoBase : false;
+      rungs.push(`4. merged:  ${pr.state === "MERGED" ? (intoBase ? `yes, into ${pr.baseRefName}` : `into ${pr.baseRefName}, not the loop's base ${base}`) : "no"}`);
     }
   }
-
-  // The next step comes from the highest confirmed rung; anything unknown means retry, not act.
-  const pr = data.pr;
-  let nextStep;
-  if (data.merged === true) nextStep = "verify it where it runs (merged; nothing left to integrate)";
-  else if (data.prLookup !== "ok") nextStep = "retry when gh works; do not open a PR or merge until the ladder can see the PR";
-  else if (pr && pr.has === null) nextStep = `fetch (git fetch ${remote}) and run the ladder again; do not merge until it confirms the PR contains the shipped commit`;
-  else if (pr && pr.state === "OPEN") {
-    if (!data.ci) nextStep = "retry: CI status is unknown; do not merge until the ladder can read it";
-    else if (data.ci.fail) nextStep = "look at the failing CI checks";
-    else if (data.ci.pending) nextStep = "wait for CI";
-    else nextStep = pr.isDraft ? "mark the PR ready and get it reviewed" : "review and merge the PR";
-  } else if (pr) nextStep = `PR #${pr.number} is ${pr.state.toLowerCase()} without merging: decide whether to reopen it or open a new one`;
-  else if (data.pushed === true) nextStep = "open a PR";
-  else if (data.pushed === false) nextStep = "push the branch";
-  else nextStep = `fetch (git fetch ${remote}) and run the ladder again`;
-  const lines = [`LADDER ${state.slug} · shipped ${short(shipHead)} on ${branch}`, ...rungs, `NEXT (for a person; crossfire does not push, merge or post): ${nextStep}`];
-  out(ctx, lines.join("\n"), { ...data, next: nextStep });
+  const lines = [`LADDER ${state.slug} · shipped ${short(shipHead)} on ${branch} (base ${base || "?"})`, ...rungs, "Facts only: crossfire does not push, merge, post or recommend; what to do next is your call."];
+  out(ctx, lines.join("\n"), data);
   return EXIT.OK;
 }
 

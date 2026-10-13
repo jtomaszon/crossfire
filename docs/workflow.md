@@ -17,7 +17,7 @@ SHIP means the loop passed the gates it was configured with, locally: the proof 
 5. **Merged**.
 6. **Live and verified**: deployed, and checked where it runs.
 
-`superpowers:finishing-a-development-branch` takes you from SHIP to a PR. `crossfire ladder --slug <slug>` reads rungs 2 to 5 (pushed, PR, CI, merged) and names the next step for a person; it never pushes, merges or posts, and rung 6 stays a person's check. Never report a change as done at a lower rung than the one it reached.
+`superpowers:finishing-a-development-branch` takes you from SHIP to a PR. `crossfire ladder --slug <slug>` reads rungs 2, 3, 4 and 5 (pushed, PR, CI, merged) as facts, including what it cannot establish (unknown); it never pushes, merges, posts or recommends an action, and rung 6 stays a person's check. Never report a change as done at a lower rung than the one it reached.
 
 ## CI is the gate; the loop is the proof
 

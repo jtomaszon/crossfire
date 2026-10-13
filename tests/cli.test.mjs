@@ -1073,7 +1073,7 @@ test("a DISPUTED answer with odd variants does not crash built; the loop reaches
   assert.match(r.stdout, /GATE: G3/);
 });
 
-test("ladder: after SHIP it reports pushed, PR, CI and merged, and never writes", (t) => {
+test("ladder: after SHIP it reports pushed, PR, CI and merged as facts, and never writes", (t) => {
   const sb = sandbox();
   t.after(() => sb.cleanup());
   const next = init(sb);
@@ -1088,54 +1088,66 @@ test("ladder: after SHIP it reports pushed, PR, CI and merged, and never writes"
   const d = ghDir(sb);
   const branch = spawnSync("git", ["branch", "--show-current"], { cwd: sb.repo, encoding: "utf8" }).stdout.trim();
   const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: sb.repo, encoding: "utf8" }).stdout.trim();
+  const pr = (over) => ({ number: 9, state: "OPEN", url: "https://example.test/pr/9", headRefOid: head, baseRefName: "main", isDraft: false, ...over });
+  const ladder = () => sb.cf("ladder", "--slug", "demo", "--repo", "acme/app");
 
-  let r = sb.cf("ladder", "--slug", "demo", "--repo", "acme/app");
+  let r = ladder();
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /1\. pushed: +no/);
+  assert.match(r.stdout, /1\. pushed: +no branch/);
   assert.match(r.stdout, /2\. PR: +none/);
-  assert.match(r.stdout, /NEXT \(for a person; crossfire does not push, merge or post\): push the branch/);
+  assert.match(r.stdout, /Facts only: crossfire does not push, merge, post or recommend/);
+  assert.doesNotMatch(r.stdout, /NEXT/);
   assert.equal(spawnSync("git", ["ls-remote", bare], { encoding: "utf8" }).stdout.trim(), "", "the ladder pushed nothing");
 
   spawnSync("git", ["push", "-q", "origin", `HEAD:refs/heads/${branch}`], { cwd: sb.repo });
-  fs.writeFileSync(`${d}/prs.json`, JSON.stringify([{ number: 9, state: "OPEN", url: "https://example.test/pr/9", headRefOid: head, isDraft: false }]));
+  fs.writeFileSync(`${d}/prs.json`, JSON.stringify([pr()]));
   fs.writeFileSync(`${d}/checks.json`, JSON.stringify([{ name: "test", bucket: "pass" }, { name: "lint", bucket: "pending" }]));
-  r = sb.cf("ladder", "--slug", "demo", "--repo", "acme/app");
+  r = ladder();
   assert.match(r.stdout, /1\. pushed: +yes/);
-  assert.match(r.stdout, /2\. PR: +#9 open/);
+  assert.match(r.stdout, /2\. PR: +#9 open into main .*head is the shipped commit/);
   assert.match(r.stdout, /3\. CI: +1 passed, 0 failed, 1 pending/);
-  assert.match(r.stdout, /wait for CI/);
+  assert.match(r.stdout, /4\. merged: +no/);
 
-  fs.writeFileSync(`${d}/prs.json`, JSON.stringify([{ number: 9, state: "MERGED", url: "https://example.test/pr/9", headRefOid: head, isDraft: false }]));
-  fs.writeFileSync(`${d}/checks.json`, JSON.stringify([{ name: "test", bucket: "pass" }]));
-  r = sb.cf("ladder", "--slug", "demo", "--repo", "acme/app");
-  assert.match(r.stdout, /4\. merged: +yes/);
-  assert.match(r.stdout, /verify it where it runs/);
+  // The PR head moves between the list and the checks: CI is unknown, not borrowed.
+  fs.writeFileSync(`${d}/moved-head`, "2".repeat(40));
+  assert.match(ladder().stdout, /3\. CI: +unknown \(the PR's head changed/);
+  fs.rmSync(`${d}/moved-head`);
 
-  // GitHub deletes the branch on merge: still merged, never "push the branch".
+  // Merged into the loop's base; GitHub then deletes the branch: still merged.
+  fs.writeFileSync(`${d}/prs.json`, JSON.stringify([pr({ state: "MERGED" })]));
   spawnSync("git", ["push", "-q", "origin", `:refs/heads/${branch}`], { cwd: sb.repo });
-  r = sb.cf("ladder", "--slug", "demo", "--repo", "acme/app");
-  assert.match(r.stdout, /1\. pushed: +no branch/);
-  assert.match(r.stdout, /verify it where it runs/);
-  assert.doesNotMatch(r.stdout, /push the branch/);
+  r = ladder();
+  assert.match(r.stdout, /1\. pushed: +no branch .*deleted after a merge/);
+  assert.match(r.stdout, /4\. merged: +yes, into main/);
 
-  // A PR whose head this clone does not have: unknown, never "merge".
-  fs.writeFileSync(`${d}/prs.json`, JSON.stringify([{ number: 9, state: "OPEN", url: "https://example.test/pr/9", headRefOid: "1".repeat(40), isDraft: false }]));
-  r = sb.cf("ladder", "--slug", "demo", "--repo", "acme/app");
-  assert.match(r.stdout, /fetch .* and run the ladder again; do not merge/);
+  // Merged into another base: not the loop's base.
+  fs.writeFileSync(`${d}/prs.json`, JSON.stringify([pr({ state: "MERGED", baseRefName: "release" })]));
+  assert.match(ladder().stdout, /4\. merged: +into release, not the loop's base main/);
 
-  // A fork PR with the same branch name is ignored; an unrelated OPEN PR does not eclipse the merged one.
-  fs.writeFileSync(`${d}/prs.json`, JSON.stringify([
-    { number: 11, state: "OPEN", url: "https://example.test/pr/11", headRefOid: head, isDraft: false, isCrossRepository: true },
-    { number: 9, state: "MERGED", url: "https://example.test/pr/9", headRefOid: head, isDraft: false },
-  ]));
-  r = sb.cf("ladder", "--slug", "demo", "--repo", "acme/app");
-  assert.match(r.stdout, /2\. PR: +#9 merged/);
+  // A closed PR that contains the commit is shown; a fork PR is ignored; an unknown head is unknown.
+  fs.writeFileSync(`${d}/prs.json`, JSON.stringify([pr({ number: 11, isCrossRepository: true }), pr({ state: "CLOSED" })]));
+  assert.match(ladder().stdout, /2\. PR: +#9 closed/);
+  fs.writeFileSync(`${d}/prs.json`, JSON.stringify([pr({ headRefOid: "1".repeat(40) })]));
+  assert.match(ladder().stdout, /unknown whether it contains/);
 
-  // gh failing: unknown, never "open a PR".
+  // gh failing: unknown.
   fs.writeFileSync(`${d}/fail`, "HTTP 502: Bad Gateway");
-  r = sb.cf("ladder", "--slug", "demo", "--repo", "acme/app");
-  assert.match(r.stdout, /2\. PR: +unknown/);
-  assert.match(r.stdout, /retry when gh works; do not open a PR or merge/);
+  assert.match(ladder().stdout, /2\. PR: +unknown/);
+});
+
+test("ladder refuses a --repo that is not the remote's repository", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  const next = init(sb);
+  sb.build(next.resultFile);
+  sb.cf("built", "--slug", "demo");
+  sb.queue("codex", approve);
+  sb.queue("grok", approve);
+  sb.cf("review", "--slug", "demo");
+  spawnSync("git", ["remote", "add", "origin", "git@github.com:acme/app.git"], { cwd: sb.repo });
+  const r = sb.cf("ladder", "--slug", "demo", "--repo", "someone/fork");
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /is not origin's repository \(acme\/app\)/);
 });
 
 test("ladder refuses a loop that has not shipped", (t) => {

@@ -19,7 +19,11 @@ if (fs.existsSync(path.join(dir, "fail"))) {
 }
 const read = (f, fallback = "") => (fs.existsSync(path.join(dir, f)) ? fs.readFileSync(path.join(dir, f), "utf8") : fallback);
 if (args[0] === "repo" && args[1] === "view") process.stdout.write("acme/app\n");
-else if (args[0] === "pr" && args[1] === "view") process.stdout.write(`${read("state", "OPEN").trim()}\n`);
+else if (args[0] === "pr" && args[1] === "view" && args.includes("headRefOid,state")) {
+  const pr = JSON.parse(read("prs.json", "[]")).find((p) => String(p.number) === args[2]);
+  const moved = read("moved-head", "").trim();
+  process.stdout.write(JSON.stringify(pr ? { headRefOid: moved || pr.headRefOid, state: pr.state } : null));
+} else if (args[0] === "pr" && args[1] === "view") process.stdout.write(`${read("state", "OPEN").trim()}\n`);
 else if (args[0] === "pr" && args[1] === "list") process.stdout.write(read("prs.json", "[]"));
 else if (args[0] === "pr" && args[1] === "checks") {
   const checks = read("checks.json", "");
