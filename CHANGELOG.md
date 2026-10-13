@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.0
+
+From reading real loops on a second machine, with the owner's decisions.
+
+- **`crossfire ladder --slug <slug>`**, after SHIP: is the branch pushed, is there a PR, what does CI say, did it merge, and the next step for a person. It only reads (`git ls-remote`, `gh pr list`, `gh pr checks`), on the remote's own repository; it never pushes, merges or posts. It stops at merged: checking that the change works where it runs stays a person's job.
+- **G6 (time budget) is checked only before a new builder leg.** A finished fix always gets its review pass, an approval ships even over budget, and over budget the breaker leg is skipped (logged) rather than leaving the fix unreviewed. Before, the budget could run out right after a fix was built, before anyone reviewed it.
+- **Escalations belong to the person who asked for the change.** The loop skill tells coordinators and subagents to report an escalation up and wait. With "run unattended", any further code goes through a new loop, at most one new loop per escalation, and a branch whose loop escalated with findings open or unreviewed is never pushed, merged or PR'd. The escalation report says so too.
+- **`doctor` and `init` warn when the session runs an older crossfire than the installed one**, and suggest `/reload-plugins`. Long sessions kept running versions several releases old.
+
 ## 1.1.1
 
 Documentation, from the first outside review.

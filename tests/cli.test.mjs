@@ -1072,3 +1072,51 @@ test("a DISPUTED answer with odd variants does not crash built; the loop reaches
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.match(r.stdout, /GATE: G3/);
 });
+
+test("ladder: after SHIP it reports pushed, PR, CI and merged, and never writes", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  const next = init(sb);
+  sb.build(next.resultFile);
+  sb.cf("built", "--slug", "demo");
+  sb.queue("codex", approve);
+  sb.queue("grok", approve);
+  assert.match(sb.cf("review", "--slug", "demo").stdout, /NEXT ACTION: SHIP/);
+  const bare = path.join(sb.tmp, "remote.git");
+  spawnSync("git", ["init", "-q", "--bare", bare]);
+  spawnSync("git", ["remote", "add", "origin", bare], { cwd: sb.repo });
+  const d = ghDir(sb);
+  const branch = spawnSync("git", ["branch", "--show-current"], { cwd: sb.repo, encoding: "utf8" }).stdout.trim();
+  const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: sb.repo, encoding: "utf8" }).stdout.trim();
+
+  let r = sb.cf("ladder", "--slug", "demo", "--repo", "acme/app");
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /1\. pushed: +no/);
+  assert.match(r.stdout, /2\. PR: +none/);
+  assert.match(r.stdout, /NEXT \(for a person; crossfire does not push, merge or post\): push the branch/);
+  assert.equal(spawnSync("git", ["ls-remote", bare], { encoding: "utf8" }).stdout.trim(), "", "the ladder pushed nothing");
+
+  spawnSync("git", ["push", "-q", "origin", `HEAD:refs/heads/${branch}`], { cwd: sb.repo });
+  fs.writeFileSync(`${d}/prs.json`, JSON.stringify([{ number: 9, state: "OPEN", url: "https://example.test/pr/9", headRefOid: head, isDraft: false }]));
+  fs.writeFileSync(`${d}/checks.json`, JSON.stringify([{ name: "test", bucket: "pass" }, { name: "lint", bucket: "pending" }]));
+  r = sb.cf("ladder", "--slug", "demo", "--repo", "acme/app");
+  assert.match(r.stdout, /1\. pushed: +yes/);
+  assert.match(r.stdout, /2\. PR: +#9 open/);
+  assert.match(r.stdout, /3\. CI: +1 passed, 0 failed, 1 pending/);
+  assert.match(r.stdout, /wait for CI/);
+
+  fs.writeFileSync(`${d}/prs.json`, JSON.stringify([{ number: 9, state: "MERGED", url: "https://example.test/pr/9", headRefOid: head, isDraft: false }]));
+  fs.writeFileSync(`${d}/checks.json`, JSON.stringify([{ name: "test", bucket: "pass" }]));
+  r = sb.cf("ladder", "--slug", "demo", "--repo", "acme/app");
+  assert.match(r.stdout, /4\. merged: +yes/);
+  assert.match(r.stdout, /verify it where it runs/);
+});
+
+test("ladder refuses a loop that has not shipped", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  init(sb);
+  const r = sb.cf("ladder", "--slug", "demo");
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /has not shipped/);
+});

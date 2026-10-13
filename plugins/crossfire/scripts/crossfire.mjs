@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import * as git from "./lib/git.mjs";
 import { ACTIONS, afterBreak, afterBuild, afterReview, collectFindings, compareWithPrevious, isTerminal, newState, noteMalformed } from "./lib/referee.mjs";
 import { renderBreakerBrief, renderBrief, validateBreakerResult, validateBuildResult } from "./lib/briefs.mjs";
-import { locatePlugins, readiness, usable, OFFICIAL } from "./lib/plugins.mjs";
+import { locatePlugins, readiness, usable, versionSkew, OFFICIAL } from "./lib/plugins.mjs";
 import { buildCheckFocus, buildFocus, readSpec, runReviewer } from "./lib/reviewers.mjs";
 import * as W from "./lib/watch.mjs";
 import { crossfireRoot, ensureExcluded, files, listRuns, loadState, runDir, saveState, withLock } from "./lib/store.mjs";
@@ -16,7 +16,7 @@ import { appendLessons, lessonsBlock, lessonsFromCheck, lessonsFromLoop, memoryF
 import { classifyProofFailure, grokSocketHint, readHealth, recordAttempt, summarize } from "./lib/health.mjs";
 import { CrossfireError, EXIT, atomicWriteJson, minutesBetween, nowIso, readJsonFile, run, runShell, tail, writeText } from "./lib/util.mjs";
 
-const VERSION = "1.1.1";
+const VERSION = "1.2.0";
 
 const USAGE = `crossfire ${VERSION}: referee for a spec-first build -> review -> fix loop
 
@@ -47,6 +47,8 @@ Usage:
                                        run Codex (required) and Grok Build (optional), record findings
   crossfire status [--slug <slug>]     where a loop is, and its next action
   crossfire report --slug <slug>       print the ship or escalation report
+  crossfire ladder --slug <slug> [--remote origin] [--branch <name>] [--repo OWNER/NAME]
+                                       after SHIP: is it pushed, is there a PR, CI, merged (reads only)
 
 Every command prints a NEXT ACTION. Follow it; do not decide the next step yourself.
 Global: --cwd <dir> (default: current directory), --json (machine-readable output).
@@ -245,6 +247,8 @@ function doctor(ctx) {
     }
     checks.push({ name: key, ok, required: spec.required, detail, install: ok ? [] : install });
   }
+  const skew = versionSkew(VERSION, plugins.installedSelf);
+  if (skew) checks.unshift({ name: "crossfire", ok: false, required: false, detail: skew });
   const ready = checks.every((c) => c.ok || !c.required);
   const lines = [`crossfire ${VERSION} doctor: ${ready ? "READY" : "NOT READY"}`];
   for (const c of checks) {
@@ -351,7 +355,8 @@ function init(ctx, opts) {
       afterReview(state, fromCheck.reviews, { at: state.startedAt, minutesElapsed: 0 });
     }
     saveState(dir, state);
-    emitNext(ctx, dir, state, [`PREFLIGHT: ${preflight}`]);
+    const skew = versionSkew(VERSION, plugins.installedSelf);
+    emitNext(ctx, dir, state, [`PREFLIGHT: ${preflight}`, ...(skew ? [`WARNING: ${skew}`] : [])]);
     return EXIT.OK;
   });
 }
@@ -894,6 +899,74 @@ function report(ctx, opts) {
   return EXIT.OK;
 }
 
+// ---- ladder (read-only, after SHIP) ---------------------------------------
+
+/** Where a shipped loop's commit is now: pushed, PR, CI, merged. Reads only; never pushes or posts. */
+function ladder(ctx, opts) {
+  const { state } = requireLoop(ctx.cwd, opts.slug);
+  if (state.terminal?.kind !== "shipped") throw new CrossfireError(`loop ${state.slug} has not shipped (${state.phase}); the ladder starts at SHIP`);
+  const remote = opts.remote ?? "origin";
+  const shipHead = state.lastBuildHead;
+  const branch = opts.branch ?? git.branch(state.repo);
+  if (!shipHead || !branch) throw new CrossfireError("cannot tell the shipped commit or the branch; pass --branch <name>");
+  const short = (sha) => String(sha ?? "").slice(0, 12);
+  const contains = (tip) => tip === shipHead || run("git", ["merge-base", "--is-ancestor", shipHead, tip], { cwd: state.repo }).status === 0;
+  const rungs = [];
+  const data = { slug: state.slug, branch, shipHead, remote };
+
+  // 1. pushed
+  const rs = W.remoteSha(state.repo, remote, `refs/heads/${branch}`);
+  data.pushed = rs.error ? null : Boolean(rs.sha && contains(rs.sha));
+  rungs.push(`1. pushed:  ${rs.error ? `unknown (${rs.error})` : !rs.sha ? `no (${remote} has no branch ${branch})` : rs.sha === shipHead ? `yes (${remote}/${branch} at ${short(rs.sha)})` : data.pushed ? `yes, with later commits on top (${remote}/${branch} at ${short(rs.sha)})` : `no (${remote}/${branch} is at ${short(rs.sha)}, which does not contain ${short(shipHead)}; fetch to compare if it is newer)`}`);
+
+  // 2-4 through gh, on the remote's own repository
+  const target = W.resolveGh(state.repo, remote, opts.repo ?? null);
+  let pr = null;
+  if (target.error) {
+    rungs.push(`2. PR:      unknown (${target.error})`, "3. CI:      unknown", "4. merged:  unknown");
+  } else {
+    const r = run(W.ghBin(), W.ghArgs(target.gh, ["pr", "list", "--head", branch, "--state", "all", "--json", "number,state,url,headRefOid,isDraft", "--limit", "5"]), { cwd: state.repo, timeoutMs: 30_000 });
+    let prs = null;
+    try {
+      prs = r.status === 0 ? JSON.parse(r.stdout) : null;
+    } catch {
+      prs = null;
+    }
+    if (!prs) {
+      const why = (r.stderr || r.stdout || `exit ${r.status}`).trim().split("\n")[0];
+      rungs.push(`2. PR:      unknown (gh: ${why})`, "3. CI:      unknown", "4. merged:  unknown");
+    } else {
+      pr = prs.find((p) => p.state === "OPEN") ?? prs.find((p) => p.state === "MERGED") ?? prs[0] ?? null;
+      data.pr = pr;
+      if (!pr) {
+        rungs.push(`2. PR:      none for branch ${branch}`, "3. CI:      -", "4. merged:  no");
+      } else {
+        const hasShip = pr.headRefOid ? contains(pr.headRefOid) : false;
+        rungs.push(`2. PR:      #${pr.number} ${pr.state.toLowerCase()}${pr.isDraft ? " (draft)" : ""} ${pr.url}${hasShip ? "" : ` (its head ${short(pr.headRefOid)} does not contain the shipped commit, as far as this checkout knows)`}`);
+        const c = run(W.ghBin(), W.ghArgs(target.gh, ["pr", "checks", String(pr.number), "--json", "name,bucket"]), { cwd: state.repo, timeoutMs: 30_000 });
+        let checks = null;
+        try {
+          checks = JSON.parse(c.stdout || "null"); // gh exits non-zero while checks fail or are pending
+        } catch {
+          checks = null;
+        }
+        if (!Array.isArray(checks)) rungs.push(`3. CI:      ${/no checks/i.test(c.stderr) ? "no checks on this PR" : `unknown (gh: ${(c.stderr || `exit ${c.status}`).trim().split("\n")[0]})`}`);
+        else {
+          const n = (b) => checks.filter((x) => x.bucket === b).length;
+          data.ci = { pass: n("pass"), fail: n("fail") + n("cancel"), pending: n("pending"), skipping: n("skipping") };
+          rungs.push(`3. CI:      ${checks.length ? `${data.ci.pass} passed, ${data.ci.fail} failed, ${data.ci.pending} pending${data.ci.skipping ? `, ${data.ci.skipping} skipped` : ""}` : "no checks on this PR"}`);
+        }
+        data.merged = pr.state === "MERGED" && hasShip;
+        rungs.push(`4. merged:  ${pr.state === "MERGED" ? (hasShip ? "yes" : "the PR merged, but its head does not contain the shipped commit as far as this checkout knows") : "no"}`);
+      }
+    }
+  }
+  const nextStep = data.pushed === false ? "push the branch" : !pr ? "open a PR" : data.ci?.fail ? "look at the failing CI checks" : data.ci?.pending ? "wait for CI" : pr.state === "OPEN" ? (pr.isDraft ? "mark the PR ready and get it reviewed" : "review and merge the PR") : data.merged ? "verify it where it runs" : "check the PR";
+  const lines = [`LADDER ${state.slug} · shipped ${short(shipHead)} on ${branch}`, ...rungs, `NEXT (for a person; crossfire does not push, merge or post): ${nextStep}`];
+  out(ctx, lines.join("\n"), { ...data, next: nextStep });
+  return EXIT.OK;
+}
+
 // ---- main ----------------------------------------------------------------
 
 export function main(argv = process.argv.slice(2)) {
@@ -909,7 +982,7 @@ export function main(argv = process.argv.slice(2)) {
       process.stdout.write(`${USAGE}\n`);
       return cmd || opts.help ? EXIT.OK : EXIT.USAGE;
     }
-    const commands = { doctor: () => doctor(ctx), memory: () => memoryCmd(ctx), check: () => check(ctx, opts), checks: () => checks(ctx), watch: () => watch(ctx, opts), spec: () => specCmd(ctx, opts), proof: () => proof(ctx, opts), attacked: () => attacked(ctx, opts), init: () => init(ctx, opts), built: () => built(ctx, opts), review: () => review(ctx, opts), status: () => status(ctx, opts), report: () => report(ctx, opts) };
+    const commands = { doctor: () => doctor(ctx), memory: () => memoryCmd(ctx), check: () => check(ctx, opts), checks: () => checks(ctx), watch: () => watch(ctx, opts), spec: () => specCmd(ctx, opts), proof: () => proof(ctx, opts), attacked: () => attacked(ctx, opts), init: () => init(ctx, opts), built: () => built(ctx, opts), review: () => review(ctx, opts), status: () => status(ctx, opts), report: () => report(ctx, opts), ladder: () => ladder(ctx, opts) };
     if (!commands[cmd]) throw new CrossfireError(`unknown command "${cmd}"\n\n${USAGE}`);
     return commands[cmd]();
   } catch (e) {

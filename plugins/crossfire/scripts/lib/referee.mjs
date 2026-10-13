@@ -136,6 +136,11 @@ export function noteMalformed(state, key, reason, at) {
   return null;
 }
 
+/** G6 is checked only before a new builder or breaker leg starts: a finished leg always gets its review. */
+function budgetSpent(state, at) {
+  return escalate(state, at, "G6", `wall-clock budget of ${state.maxMinutes} min spent; no new builder leg started`);
+}
+
 function overBudget(state, minutesElapsed) {
   return minutesElapsed > state.maxMinutes;
 }
@@ -173,14 +178,11 @@ export function afterBuild(state, result, g0, { at, minutesElapsed }) {
     }
   }
 
-  if (overBudget(state, minutesElapsed)) {
-    return escalate(state, at, "G6", `wall-clock budget of ${state.maxMinutes} min spent`);
-  }
-
   if (!g0.passed) {
     if (state.round >= state.maxRounds) {
       return escalate(state, at, "G2", `G0 still failing after ${state.round} builder legs`);
     }
+    if (overBudget(state, minutesElapsed)) return budgetSpent(state, at);
     state.round += 1;
     state.phase = "build";
     return sendBuilder(state, at, "g0", { failures: g0.failures });
@@ -193,12 +195,16 @@ export function afterBuild(state, result, g0, { at, minutesElapsed }) {
   // One breaker pass per builder leg, before the reviewers; not after its own harden leg.
   const hardenLeg = state.phase === "harden";
   if (state.breaker && !hardenLeg && !state.breakerRounds.includes(state.round)) {
-    state.phase = "break";
-    state.next = { action: ACTIONS.SEND_BREAKER, round: state.round };
-    log(state, at, "send-breaker", `round ${state.round}`);
-    return state.next;
+    // Over budget: the finished fix goes to its review; only the extra breaker leg is skipped.
+    if (overBudget(state, minutesElapsed)) {
+      log(state, at, "breaker-skipped", `round ${state.round}: wall-clock budget of ${state.maxMinutes} min spent; the fix goes to review`);
+    } else {
+      state.phase = "break";
+      state.next = { action: ACTIONS.SEND_BREAKER, round: state.round };
+      log(state, at, "send-breaker", `round ${state.round}`);
+      return state.next;
+    }
   }
-
   state.phase = "review";
   state.next = { action: ACTIONS.RUN_REVIEW, pass: state.reviewPass + 1 };
   log(state, at, "run-review", `pass ${state.reviewPass + 1}`);
@@ -230,11 +236,9 @@ export function afterBreak(state, attacks, { at, minutesElapsed }) {
       history: [],
     });
   }
-  // The budget is checked after the attacks are in the ledger, so an escalation reports them.
-  if (overBudget(state, minutesElapsed)) {
-    return escalate(state, at, "G6", `wall-clock budget of ${state.maxMinutes} min spent`);
-  }
   if (attacks.length) {
+    // Checked after the attacks are in the ledger, so the escalation reports them.
+    if (overBudget(state, minutesElapsed)) return budgetSpent(state, at);
     state.phase = "harden";
     return sendBuilder(state, at, "harden");
   }
@@ -417,12 +421,9 @@ export function afterReview(state, reviews, { at, minutesElapsed }) {
     return escalate(state, at, gate, escalations.map(([g, r]) => `${g}: ${r}`).join("; "));
   }
 
-  if (overBudget(state, minutesElapsed)) {
-    return escalate(state, at, "G6", `wall-clock budget of ${state.maxMinutes} min spent`);
-  }
-
   if (openAboveNit(state).length === 0) {
     if (openNits(state).length === 0) return ship(state, at, `approved at review pass ${state.reviewPass}`);
+    if (overBudget(state, minutesElapsed)) return budgetSpent(state, at);
     state.phase = "nit-build";
     state.nitPassDone = true;
     return sendBuilder(state, at, "nits");
@@ -431,6 +432,7 @@ export function afterReview(state, reviews, { at, minutesElapsed }) {
   if (state.round >= state.maxRounds) {
     return escalate(state, at, "G2", `${openAboveNit(state).length} finding(s) still open after ${state.round} builder legs`);
   }
+  if (overBudget(state, minutesElapsed)) return budgetSpent(state, at);
   state.round += 1;
   state.phase = "build";
   return sendBuilder(state, at, "fix");

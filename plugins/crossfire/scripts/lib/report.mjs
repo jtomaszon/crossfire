@@ -117,7 +117,7 @@ export function renderReport(state, { minutesElapsed, changedFiles = [], head = 
         const h = [...e.history].reverse().find((x) => x.reflagged);
         return h ? [`  - ${e.id} re-flagged as: ${h.reflagged}${h.body ? `: ${h.body.split("\n")[0].slice(0, 300)}` : ""}`] : [];
       }),
-      "- Options: accept as is, give the builder a direction and start a new loop on top of this branch, or drop the change.",
+      "- Options: accept as is, give the builder a direction and start a new loop on top of this branch, or drop the change. The person who asked for the change decides, not an agent running the loop; any further code goes through a new loop.",
     );
   }
   if (changedFiles.length) out.push("", "## Files changed", ...changedFiles.map((f) => `- ${f}`));

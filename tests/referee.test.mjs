@@ -116,10 +116,23 @@ test("G5: a brand-new blocker at review pass 2 escalates", () => {
   assert.equal(next.gate, "G5");
 });
 
-test("G6: the wall-clock budget escalates", () => {
-  const s = fresh({ maxMinutes: 10 });
-  const next = afterBuild(s, done(), green, { at, minutesElapsed: 11 });
-  assert.equal(next.gate, "G6");
+test("G6 is checked only before a new leg: a finished fix is reviewed, an approval ships, more work escalates", () => {
+  const over = { at, minutesElapsed: 11 };
+  let s = fresh({ maxMinutes: 10 });
+  assert.equal(afterBuild(s, done(), green, over).action, ACTIONS.RUN_REVIEW, "the finished build gets its review");
+  assert.equal(afterReview(s, [codex([])], over).action, ACTIONS.SHIP, "an approval ships even over budget");
+  s = fresh({ maxMinutes: 10 });
+  afterBuild(s, done(), green, t);
+  const next = afterReview(s, [codex([f("BLOCKER", "hole")])], over);
+  assert.equal(next.gate, "G6", "no new builder leg starts over budget");
+  s = fresh({ maxMinutes: 10 });
+  assert.equal(afterBuild(s, done(), red, over).gate, "G6", "a red build does not start another leg over budget");
+});
+
+test("over budget, the breaker leg is skipped and the fix goes to review", () => {
+  const s = fresh({ breaker: true, maxMinutes: 10 });
+  assert.equal(afterBuild(s, done(), green, { at, minutesElapsed: 11 }).action, ACTIONS.RUN_REVIEW);
+  assert.ok(s.history.some((h) => h.event === "breaker-skipped"));
 });
 
 test("G1: a second malformed input for the same step escalates", () => {
@@ -217,8 +230,10 @@ test("an escalation report lists findings the builder claimed fixed that no revi
   const s = fresh({ maxMinutes: 10 });
   afterBuild(s, done(), green, t);
   afterReview(s, [codex([f("BLOCKER", "hole")])], t);
-  const next = afterBuild(s, done([{ id: "F1", status: "FIXED", where: "a.js:10" }]), green, { at, minutesElapsed: 11 });
-  assert.equal(next.gate, "G6");
+  afterBuild(s, done([{ id: "F1", status: "FIXED", where: "a.js:10" }]), green, { at, minutesElapsed: 11 });
+  noteMalformed(s, "review-codex", "failed", at);
+  const next = noteMalformed(s, "review-codex", "failed", at);
+  assert.equal(next.gate, "G1");
   const report = renderReport(s, { minutesElapsed: 11 });
   assert.match(report, /Claimed fixed by the builder, not re-reviewed: F1 \(BLOCKER\)/);
 });
@@ -241,8 +256,10 @@ test("breaker evidence counts the builder's answers; a dispute on an early stop 
   const s = fresh({ breaker: true, maxMinutes: 10 });
   afterBuild(s, done(), green, t);
   afterBreak(s, [attack("maybe a race"), attack("real hole", "b.js", 5)], t);
-  const next = afterBuild(s, done([{ id: "B1", status: "DISPUTED", note: "lock covers it" }, { id: "B2", status: "FIXED", where: "b.js:5" }]), green, { at, minutesElapsed: 11 });
-  assert.equal(next.gate, "G6");
+  afterBuild(s, done([{ id: "B1", status: "DISPUTED", note: "lock covers it" }, { id: "B2", status: "FIXED", where: "b.js:5" }]), green, { at, minutesElapsed: 11 });
+  noteMalformed(s, "review-codex", "failed", at);
+  const next = noteMalformed(s, "review-codex", "failed", at);
+  assert.equal(next.gate, "G1");
   const report = renderReport(s, { minutesElapsed: 11 });
   assert.match(report, /the builder answered 1 FIXED and 1 DISPUTED; 0 of these answers went through a later review pass, 2 did not/);
   assert.match(report, /Claimed fixed by the builder, not re-reviewed: B2 \(BLOCKER\)/);
@@ -283,8 +300,10 @@ test("breaker coverage is counted per answer across rounds", () => {
   afterReview(s, [codex([f("CHANGES", "elsewhere", "z.js", 90)])], t);
   afterBuild(s, done([{ id: "F1", status: "FIXED", where: "z.js:90" }]), green, t);
   afterBreak(s, [attack("second", "b.js", 5)], t);
-  const next = afterBuild(s, done([{ id: "B2", status: "FIXED", where: "b.js:5" }]), green, { at, minutesElapsed: 11 });
-  assert.equal(next.gate, "G6");
+  afterBuild(s, done([{ id: "B2", status: "FIXED", where: "b.js:5" }]), green, { at, minutesElapsed: 11 });
+  noteMalformed(s, "review-codex", "failed", at);
+  const next = noteMalformed(s, "review-codex", "failed", at);
+  assert.equal(next.gate, "G1");
   const report = renderReport(s, { minutesElapsed: 11 });
   assert.match(report, /1 of these answers went through a later review pass, 1 did not/);
 });
@@ -331,7 +350,9 @@ test("a breaker answer changed after a review is not counted as reviewed", () =>
   afterBuild(s, done([{ id: "B1", status: "FIXED", where: "a.js:10" }]), green, t);
   afterReview(s, [codex([f("CHANGES", "near the attack", "a.js", 11)])], t);
   assert.equal(s.ledger.find((e) => e.id === "B1").status, "claimed_fixed", "held at a finding's place");
-  const next = afterBuild(s, done([{ id: "F1", status: "FIXED", where: "a.js:11" }, { id: "B1", status: "DISPUTED", note: "changed my mind" }]), green, { at, minutesElapsed: 11 });
-  assert.equal(next.gate, "G6");
+  afterBuild(s, done([{ id: "F1", status: "FIXED", where: "a.js:11" }, { id: "B1", status: "DISPUTED", note: "changed my mind" }]), green, { at, minutesElapsed: 11 });
+  noteMalformed(s, "review-codex", "failed", at);
+  const next = noteMalformed(s, "review-codex", "failed", at);
+  assert.equal(next.gate, "G1");
   assert.match(renderReport(s, { minutesElapsed: 11 }), /0 of these answers went through a later review pass, 1 did not/);
 });

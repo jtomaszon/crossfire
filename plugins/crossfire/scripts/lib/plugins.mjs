@@ -143,6 +143,9 @@ export function locatePlugins() {
       else res.problems.push(`${spec.script} not found under ${res.root ?? "the install path"}`);
     }
   }
+  // The crossfire install Claude Code knows about, to spot a session still running an older one.
+  const self = list.ok && Array.isArray(list.value) ? list.value.find((p) => String(p.id).startsWith("crossfire@")) : null;
+  out.installedSelf = self ? { id: self.id, version: self.version ?? null } : null;
   return out;
 }
 
@@ -161,4 +164,10 @@ export function readiness(plugin, cwd) {
   } catch {
     return { ready: false, detail: { error: (r.stderr || r.stdout).trim().slice(0, 500) } };
   }
+}
+
+/** One line when the running crossfire is not the installed one (an old session), else null. */
+export function versionSkew(running, installed) {
+  if (!installed?.version || !running || compareVersions(running, installed.version) === 0) return null;
+  return `this session runs crossfire ${running}, but ${installed.id} ${installed.version} is installed: run /reload-plugins (or start a new session) to use it`;
 }

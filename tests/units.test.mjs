@@ -306,3 +306,11 @@ test("re-check: a merged finding is near every earlier finding at any reviewer's
   assert.deepEqual(d.unclear.map((p) => p.index), [2]);
   assert.deepEqual(d.resolved, []);
 });
+
+import { versionSkew } from "../plugins/crossfire/scripts/lib/plugins.mjs";
+
+test("version skew: one line when the session runs an older crossfire than the installed one", () => {
+  assert.match(versionSkew("1.1.0", { id: "crossfire@jtomaszon", version: "1.2.0" }), /runs crossfire 1\.1\.0, but crossfire@jtomaszon 1\.2\.0 is installed: run \/reload-plugins/);
+  assert.equal(versionSkew("1.2.0", { id: "crossfire@jtomaszon", version: "1.2.0" }), null);
+  assert.equal(versionSkew("1.2.0", null), null, "not installed through a marketplace (a checkout): no warning");
+});
