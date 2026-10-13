@@ -926,7 +926,8 @@ function ciForCommit(target, sha, cwd, expected = []) {
   if (!complete(runs) || !complete(stats)) return { error: "GitHub returned fewer checks than it counts; the list is incomplete" };
   const items = [];
   for (const r of rows(runs)) {
-    if (r.status !== "completed" || r.conclusion === "stale") items.push(["run", r.name, "pending"]);
+    if (["queued", "in_progress", "waiting", "requested", "pending"].includes(r.status) || (r.status === "completed" && r.conclusion === "stale")) items.push(["run", r.name, "pending"]);
+    else if (r.status !== "completed") return { error: `check ${r.name} has a status crossfire does not know (${r.status})` };
     else if (r.conclusion === "success") items.push(["run", r.name, "pass"]);
     else if (["neutral", "skipped"].includes(r.conclusion)) items.push(["run", r.name, "skipping"]);
     else if (["failure", "timed_out", "action_required", "cancelled", "startup_failure"].includes(r.conclusion)) items.push(["run", r.name, "fail"]);
@@ -1038,6 +1039,7 @@ function ladder(ctx, opts) {
       rungs.push(`2. PR:      #${pr.number} ${pr.state.toLowerCase()} into ${pr.baseRefName ?? "?"} ${pr.url}, head ${short(pr.headRefOid)}: unknown whether it contains ${short(shipHead)} (this clone ${shallow ? "is shallow" : "does not have that commit"}: fetch to compare)${truncated}`, "3. CI:      unknown", "4. merged:  unknown");
     } else {
       const extra = pr.headRefOid === shipHead ? "head is the shipped commit" : `head ${short(pr.headRefOid)} has commits on top of the shipped commit that this loop did not review`;
+      const rung2 = rungs.length;
       rungs.push(`2. PR:      #${pr.number} ${pr.state.toLowerCase()}${pr.isDraft ? " (draft)" : ""}${pr.isCrossRepository ? " (from a fork)" : ""} into ${pr.baseRefName ?? "?"} ${pr.url}; ${extra}${othersMerged.length ? `; also merged: ${othersMerged.map((p) => `#${p.number} into ${p.baseRefName}`).join(", ")}` : ""}${truncated}`);
       // The PR is read back (head, state, and required checks it still expects), then CI is read
       // for that exact commit. CI is reported only when the read-back head is the validated one.
@@ -1051,11 +1053,18 @@ function ladder(ctx, opts) {
       if (!after || typeof after !== "object") {
         rungs.push(`3. CI:      unknown (could not read PR #${pr.number} back: ${(v.stderr || `exit ${v.status}`).trim().split("\n")[0]})`);
       } else if (after.headRefOid !== pr.headRefOid) {
+        // Nothing read for the old head is a fact about the PR any more.
         data.headNow = after.headRefOid;
-        rungs.push(`3. CI:      unknown (the PR's head moved to ${short(after.headRefOid)} while the ladder read it: run it again)`);
+        data.pr = { ...pr, headRefOid: after.headRefOid, headMoved: true };
+        rungs[rung2] = `2. PR:      #${pr.number} ${pr.url}: its head moved from ${short(pr.headRefOid)} to ${short(after.headRefOid)} while the ladder read it; unknown whether it contains ${short(shipHead)}: run the ladder again`;
+        rungs.push("3. CI:      unknown (the PR's head moved)");
       } else {
-        const expected = (Array.isArray(after.statusCheckRollup) ? after.statusCheckRollup : []).filter((c) => c?.state === "EXPECTED").map((c) => c.context ?? c.name).filter(Boolean);
-        const ci = ciForCommit(target, pr.headRefOid, state.repo, expected);
+        const rollup = Array.isArray(after.statusCheckRollup) ? after.statusCheckRollup : null;
+        // gh reads at most 100 rollup entries; past that, a check still awaited could be missing.
+        const expected = rollup
+          ? rollup.filter((c) => c?.state === "EXPECTED" || (c?.__typename === "CheckRun" && ["QUEUED", "REQUESTED", "WAITING", "PENDING", "IN_PROGRESS"].includes(c.status))).map((c) => c.context ?? c.name).filter(Boolean)
+          : [];
+        const ci = !rollup || rollup.length >= 100 ? { error: !rollup ? "the PR's check rollup could not be read" : "the PR has 100 or more checks, more than crossfire can confirm complete" } : ciForCommit(target, pr.headRefOid, state.repo, expected);
         if (ci.error) rungs.push(`3. CI:      unknown (${ci.error})`);
         else {
           data.ci = { ...ci.counts, head: pr.headRefOid };
@@ -1065,7 +1074,8 @@ function ladder(ctx, opts) {
       }
       // The state read back last is the newest; if it is missing, merged is unknown unless another PR settles it.
       const nowState = after && after.headRefOid === pr.headRefOid ? after.state : null;
-      if (mergedFact === true) data.merged = true;
+      if (data.headNow) data.merged = mergedFact === true ? true : null;
+      else if (mergedFact === true) data.merged = true;
       else if (nowState === "MERGED" && onBase(pr)) data.merged = true;
       else if (!nowState) data.merged = null;
       else data.merged = mergedFact;

@@ -1127,6 +1127,16 @@ test("ladder: after SHIP it reports pushed, PR, CI and merged as facts, and neve
   fs.rmSync(`${d}/check-runs-total`);
   fs.writeFileSync(`${d}/check-runs.jsonl`, jsonl([{ name: "odd", status: "completed", conclusion: "something_new" }]));
   assert.match(ladder().stdout, /3\. CI: +unknown \(check odd finished with an outcome crossfire does not know/);
+  fs.writeFileSync(`${d}/check-runs.jsonl`, jsonl([{ name: "odd", status: "something_new", conclusion: null }]));
+  assert.match(ladder().stdout, /3\. CI: +unknown \(check odd has a status crossfire does not know/);
+  // A check run GitHub has queued but not created on the commit yet is pending.
+  fs.writeFileSync(`${d}/check-runs.jsonl`, jsonl([{ name: "test", status: "completed", conclusion: "success" }]));
+  fs.writeFileSync(`${d}/rollup.json`, JSON.stringify([{ __typename: "CheckRun", name: "deploy-preview", status: "QUEUED" }]));
+  assert.match(ladder().stdout, /3\. CI: +1 passed, 1 failed, 1 pending/);
+  // 100 or more rollup entries: too many to confirm complete.
+  fs.writeFileSync(`${d}/rollup.json`, JSON.stringify(Array.from({ length: 100 }, (_, i) => ({ __typename: "StatusContext", context: `c${i}`, state: "SUCCESS" }))));
+  assert.match(ladder().stdout, /3\. CI: +unknown \(the PR has 100 or more checks/);
+  fs.rmSync(`${d}/rollup.json`);
   fs.writeFileSync(`${d}/view-fail`, "");
   r = sb.cf("ladder", "--slug", "demo", "--repo", "acme/app", "--json");
   assert.equal(r.json().ci, null, "no CI counts when the PR cannot be read back");
@@ -1134,10 +1144,15 @@ test("ladder: after SHIP it reports pushed, PR, CI and merged as facts, and neve
 
   // The PR head moves while the ladder reads it: CI unknown, and --json says where it went.
   fs.writeFileSync(`${d}/moved-head`, "2".repeat(40));
-  assert.match(ladder().stdout, /3\. CI: +unknown \(the PR's head moved to 222222222222/);
+  r = ladder();
+  assert.match(r.stdout, /2\. PR: +#9 .*its head moved from [0-9a-f]{12} to 222222222222 while the ladder read it/);
+  assert.doesNotMatch(r.stdout, /head is the shipped commit/);
+  assert.match(r.stdout, /3\. CI: +unknown \(the PR's head moved\)/);
+  assert.match(r.stdout, /4\. merged: +unknown/);
   const j = sb.cf("ladder", "--slug", "demo", "--repo", "acme/app", "--json").json();
   assert.equal(j.ci, null);
   assert.equal(j.headNow, "2".repeat(40));
+  assert.equal(j.pr.headRefOid, "2".repeat(40), "the JSON never keeps the old head as current");
   fs.rmSync(`${d}/moved-head`);
   fs.rmSync(`${d}/statuses.jsonl`);
   fs.rmSync(`${d}/check-runs.jsonl`);
