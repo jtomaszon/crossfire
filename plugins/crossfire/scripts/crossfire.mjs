@@ -16,7 +16,7 @@ import { appendLessons, lessonsBlock, lessonsFromCheck, lessonsFromLoop, memoryF
 import { classifyProofFailure, grokSocketHint, readHealth, recordAttempt, summarize } from "./lib/health.mjs";
 import { CrossfireError, EXIT, atomicWriteJson, minutesBetween, nowIso, readJsonFile, run, runShell, tail, writeText } from "./lib/util.mjs";
 
-const VERSION = "1.2.0";
+const VERSION = "1.2.1";
 
 const USAGE = `crossfire ${VERSION}: referee for a spec-first build -> review -> fix loop
 
@@ -900,6 +900,30 @@ function report(ctx, opts) {
   return EXIT.OK;
 }
 
+/**
+ * CI for one commit: its check runs (GitHub Actions and apps) and its commit statuses (older
+ * integrations), counted as pass, fail, pending and skipping. { counts } or { error }.
+ */
+function ciForCommit(target, sha, cwd) {
+  const api = (endpoint, jq) => run(W.ghBin(), W.ghArgs(target.gh, ["api", endpoint, "--paginate", "--jq", jq]), { cwd, timeoutMs: 30_000 });
+  const lines = (r) => r.stdout.split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  const runs = api(`repos/${target.nwo}/commits/${sha}/check-runs?per_page=100`, ".check_runs[] | {name, status, conclusion}");
+  if (runs.status !== 0) return { error: (runs.stderr || `exit ${runs.status}`).trim().split("\n")[0] };
+  const statuses = api(`repos/${target.nwo}/commits/${sha}/status?per_page=100`, ".statuses[] | {name: .context, state}");
+  if (statuses.status !== 0) return { error: (statuses.stderr || `exit ${statuses.status}`).trim().split("\n")[0] };
+  let items;
+  try {
+    items = [
+      ...lines(runs).map((r) => (r.status !== "completed" ? "pending" : r.conclusion === "success" ? "pass" : ["neutral", "skipped"].includes(r.conclusion) ? "skipping" : r.conclusion === "stale" ? "pending" : "fail")),
+      ...lines(statuses).map((x) => (x.state === "success" ? "pass" : x.state === "pending" ? "pending" : "fail")),
+    ];
+  } catch {
+    return { error: "gh returned something that is not JSON" };
+  }
+  const n = (b) => items.filter((x) => x === b).length;
+  return { counts: { total: items.length, pass: n("pass"), fail: n("fail"), pending: n("pending"), skipping: n("skipping") } };
+}
+
 // ---- ladder (read-only, after SHIP) ---------------------------------------
 
 /**
@@ -995,8 +1019,9 @@ function ladder(ctx, opts) {
     } else {
       const extra = pr.headRefOid === shipHead ? "head is the shipped commit" : `head ${short(pr.headRefOid)} has commits on top of the shipped commit that this loop did not review`;
       rungs.push(`2. PR:      #${pr.number} ${pr.state.toLowerCase()}${pr.isDraft ? " (draft)" : ""}${pr.isCrossRepository ? " (from a fork)" : ""} into ${pr.baseRefName ?? "?"} ${pr.url}; ${extra}${othersMerged.length ? `; also merged: ${othersMerged.map((p) => `#${p.number} into ${p.baseRefName}`).join(", ")}` : ""}${truncated}`);
-      // CI for that PR, bound to the head validated above: re-read the head after the checks.
-      const c = run(W.ghBin(), W.ghArgs(target.gh, ["pr", "checks", String(pr.number), "--json", "name,bucket"]), { cwd: state.repo, timeoutMs: 30_000 });
+      // CI is read for the validated head commit itself (check runs and commit statuses), so it
+      // cannot belong to another head. The PR is read back once more for its latest state.
+      const ci = ciForCommit(target, pr.headRefOid, state.repo);
       const v = run(W.ghBin(), W.ghArgs(target.gh, ["pr", "view", String(pr.number), "--json", "headRefOid,state"]), { cwd: state.repo, timeoutMs: 30_000 });
       let after = null;
       try {
@@ -1004,21 +1029,12 @@ function ladder(ctx, opts) {
       } catch {
         after = null;
       }
-      let checks = null;
-      try {
-        checks = JSON.parse(c.stdout || "null"); // gh exits non-zero while checks fail or are pending
-      } catch {
-        checks = null;
+      if (ci.error) rungs.push(`3. CI:      unknown (gh: ${ci.error})`);
+      else {
+        data.ci = { ...ci.counts, head: pr.headRefOid };
+        const c = ci.counts;
+        rungs.push(`3. CI:      ${c.total ? `${c.pass} passed, ${c.fail} failed, ${c.pending} pending${c.skipping ? `, ${c.skipping} skipped` : ""}` : "no checks reported yet"} (on ${short(pr.headRefOid)})${after && after.headRefOid !== pr.headRefOid ? `; the PR's head has since moved to ${short(after.headRefOid)}: run the ladder again for its CI` : ""}`);
       }
-      if (!after || after.headRefOid !== pr.headRefOid) rungs.push(`3. CI:      unknown (the PR's head changed while it was being read, or gh could not say: run the ladder again)`);
-      else if (Array.isArray(checks)) {
-        const n = (b) => checks.filter((x) => x.bucket === b).length;
-        data.ci = { total: checks.length, pass: n("pass"), fail: n("fail") + n("cancel"), pending: n("pending"), skipping: n("skipping"), head: pr.headRefOid };
-        rungs.push(`3. CI:      ${checks.length ? `${data.ci.pass} passed, ${data.ci.fail} failed, ${data.ci.pending} pending${data.ci.skipping ? `, ${data.ci.skipping} skipped` : ""}` : "no checks reported yet"} (on ${short(pr.headRefOid)})`);
-      } else if (/no checks/i.test(c.stderr)) {
-        data.ci = { total: 0, pass: 0, fail: 0, pending: 0, skipping: 0, head: pr.headRefOid };
-        rungs.push(`3. CI:      no checks reported yet (on ${short(pr.headRefOid)})`);
-      } else rungs.push(`3. CI:      unknown (gh: ${(c.stderr || `exit ${c.status}`).trim().split("\n")[0]})`);
       // The state read back last is the newest; if it is missing, merged is unknown unless another PR settles it.
       const nowState = after && after.headRefOid === pr.headRefOid ? after.state : null;
       if (mergedFact === true) data.merged = true;

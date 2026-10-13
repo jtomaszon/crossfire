@@ -1101,17 +1101,26 @@ test("ladder: after SHIP it reports pushed, PR, CI and merged as facts, and neve
 
   spawnSync("git", ["push", "-q", "origin", `HEAD:refs/heads/${branch}`], { cwd: sb.repo });
   fs.writeFileSync(`${d}/prs.json`, JSON.stringify([pr()]));
-  fs.writeFileSync(`${d}/checks.json`, JSON.stringify([{ name: "test", bucket: "pass" }, { name: "lint", bucket: "pending" }]));
+  const jsonl = (rows) => rows.map((x) => JSON.stringify(x)).join("\n") + "\n";
+  fs.writeFileSync(`${d}/check-runs.jsonl`, jsonl([
+    { name: "test", status: "completed", conclusion: "success" },
+    { name: "lint", status: "in_progress", conclusion: null },
+    { name: "docs", status: "completed", conclusion: "skipped" },
+  ]));
+  fs.writeFileSync(`${d}/statuses.jsonl`, jsonl([{ name: "ci/legacy", state: "failure" }]));
   r = ladder();
   assert.match(r.stdout, /1\. pushed: +yes/);
   assert.match(r.stdout, /2\. PR: +#9 open into main .*head is the shipped commit/);
-  assert.match(r.stdout, /3\. CI: +1 passed, 0 failed, 1 pending/);
+  assert.match(r.stdout, new RegExp(`3\\. CI: +1 passed, 1 failed, 1 pending, 1 skipped \\(on ${head.slice(0, 12)}\\)`));
   assert.match(r.stdout, /4\. merged: +no/);
+  const ciCalls = fs.readFileSync(`${d}/calls.log`, "utf8").split("\n").filter((l) => l.includes("check-runs") || l.includes("/status"));
+  assert.ok(ciCalls.length >= 2 && ciCalls.every((l) => l.includes(`/commits/${head}/`)), "CI is read for the shipped commit itself");
 
-  // The PR head moves between the list and the checks: CI is unknown, not borrowed.
+  // The PR head moves while the ladder reads it: CI stays tied to the commit it read, and says so.
   fs.writeFileSync(`${d}/moved-head`, "2".repeat(40));
-  assert.match(ladder().stdout, /3\. CI: +unknown \(the PR's head changed/);
+  assert.match(ladder().stdout, /\(on [0-9a-f]{12}\); the PR's head has since moved to 222222222222/);
   fs.rmSync(`${d}/moved-head`);
+  fs.rmSync(`${d}/statuses.jsonl`);
 
   // Merged into the loop's base; GitHub then deletes the branch: still merged.
   fs.writeFileSync(`${d}/prs.json`, JSON.stringify([pr({ state: "MERGED" })]));

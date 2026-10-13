@@ -154,7 +154,6 @@ Both run read-only and return the same review schema. The focus text carries the
 ## Known issues
 
 - **Watch lock takeover under a long pause.** One watcher per PR is enforced with a lock file and a takeover protocol for stale locks. If a watcher is suspended for more than 10 seconds in the middle of taking over a stale lock, a second watcher can take it too (found by a crossfire review, reproduced in simulation). It needs a stale lock, two watchers started for the same PR, and a pause at that instant. An OS-backed exclusive lock would remove it.
-- **`crossfire ladder` reads CI by PR number.** It reads the PR's head before and after reading the checks and reports CI as unknown if the head changed, but a head that moves away and back within those seconds would go unnoticed. Reading check runs by commit would remove it.
 
 ## Develop
 

@@ -17,6 +17,7 @@ if (fs.existsSync(path.join(dir, "fail"))) {
   process.stderr.write(`${msg}\n`); // a transient outage
   process.exit(1);
 }
+fs.appendFileSync(path.join(dir, "calls.log"), `${args.join(" ")}\n`);
 const read = (f, fallback = "") => (fs.existsSync(path.join(dir, f)) ? fs.readFileSync(path.join(dir, f), "utf8") : fallback);
 if (args[0] === "repo" && args[1] === "view") process.stdout.write("acme/app\n");
 else if (args[0] === "pr" && args[1] === "view" && args.includes("headRefOid,state")) {
@@ -25,15 +26,8 @@ else if (args[0] === "pr" && args[1] === "view" && args.includes("headRefOid,sta
   process.stdout.write(JSON.stringify(pr ? { headRefOid: moved || pr.headRefOid, state: read("view-state", "").trim() || pr.state } : null));
 } else if (args[0] === "pr" && args[1] === "view") process.stdout.write(`${read("state", "OPEN").trim()}\n`);
 else if (args[0] === "pr" && args[1] === "list") process.stdout.write(read("prs.json", "[]"));
-else if (args[0] === "pr" && args[1] === "checks") {
-  const checks = read("checks.json", "");
-  if (!checks) {
-    process.stderr.write("no checks reported on the 'feature' branch\n");
-    process.exit(1);
-  }
-  process.stdout.write(checks);
-  process.exit(JSON.parse(checks).some((c) => c.bucket === "pending") ? 8 : 0);
-}
+else if (args[0] === "api" && args[1].includes("/check-runs")) process.stdout.write(read("check-runs.jsonl"));
+else if (args[0] === "api" && /\/commits\/[^/]+\/status/.test(args[1])) process.stdout.write(read("statuses.jsonl"));
 else if (args[0] === "api") {
   const endpoint = args[1];
   const kind = endpoint.endsWith("/reviews") ? "review" : endpoint.includes("/pulls/") ? "inline" : "comment";

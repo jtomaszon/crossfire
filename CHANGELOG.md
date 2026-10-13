@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.1
+
+- **`crossfire ladder` reads CI for the commit itself**, not for the PR number: the check runs and commit statuses of the PR head it validated (`gh api repos/.../commits/<sha>/check-runs` and `/status`). CI can no longer be attributed to a different head, and if the PR moves while the ladder reads it, the CI line says so. This removes the known issue listed in 1.2.0.
+
 ## 1.2.0
 
 From reading real loops on a second machine, with the owner's decisions.
