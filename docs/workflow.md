@@ -8,7 +8,7 @@ Give every change its own slug, branch and worktree (`superpowers:using-git-work
 
 ## SHIP is not done
 
-SHIP means the loop passed the gates it was configured with, locally: the proof commands, Codex's review, and Grok's and the breaker's when they ran (Grok is optional and a loop continues on Codex alone if it fails; the breaker can be off or skipped; after a nit pass, G7 ships the nit fixes without another review). Before saying which checks passed, read the report's Reviewers line (how many passes each reviewer completed, its last verdict when it was not an approval, and its latest error; not which pass it missed), its Evidence section, and its timeline: a reviewer that missed a pass shows there as `reviewer-failed:<name>` next to that pass's `review-recorded` line, and a breaker that was skipped or failed shows only there, as `breaker-skipped` or `breaker-failed`, while the Breaker line still counts that round as a pass with 0 attacks. A change is done further up the ladder:
+SHIP means the loop passed the gates it was configured with, locally: the proof commands, Codex's review, and Grok's and the breaker's when they ran (Grok is optional and a loop continues on Codex alone if it fails; the breaker can be off or skipped; after a nit pass, G7 ships the nit fixes without another review). Before saying which checks passed, read the report's Reviewers line (how many passes each reviewer completed, its last verdict when it was not an approval, and its latest error; not which pass it missed), its Evidence section, and its timeline: a reviewer that missed a pass shows there as `reviewer-failed:<name>` next to that pass's `review-recorded` line, and the Breaker line counts legs completed, skipped (malformed twice, or the time budget) and failed, with `breaker-skipped` and `breaker-failed` in the timeline saying why. A change is done further up the ladder:
 
 1. **SHIP**: crossfire's loop passed.
 2. **Pushed**: the branch is on the remote (a person pushes; crossfire never does).
@@ -17,7 +17,7 @@ SHIP means the loop passed the gates it was configured with, locally: the proof 
 5. **Merged**.
 6. **Live and verified**: deployed, and checked where it runs.
 
-`superpowers:finishing-a-development-branch` takes you from SHIP to a PR. Never report a change as done at a lower rung than the one it reached.
+`superpowers:finishing-a-development-branch` takes you from SHIP to a PR. `crossfire ladder --slug <slug>` reads rungs 2 to 5 (pushed, PR, CI, merged) and names the next step for a person; it never pushes, merges or posts, and rung 6 stays a person's check. Never report a change as done at a lower rung than the one it reached.
 
 ## CI is the gate; the loop is the proof
 
