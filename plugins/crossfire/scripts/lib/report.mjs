@@ -25,9 +25,11 @@ export function renderCheckReport(check) {
       "",
       `## Since ${d.id} (${d.head.slice(0, 12)})`,
       "",
-      `${d.resolved.length} fixed, ${d.stillOpen.length} still open, ${d.fresh} new.`,
+      `${d.resolved.length} fixed, ${d.stillOpen.length} still open, ${(d.unclear ?? []).length} unclear, ${d.fresh} new.`,
       ...d.resolved.map((p) => `- Fixed: [P${p.index}] ${p.title}`),
       ...d.stillOpen.map((x) => `- Still open (${x.how}): [P${x.previous.index}] ${x.previous.title}`),
+      ...(d.unclear ?? []).map((p) => `- Unclear: [P${p.index}] ${p.title} (a new finding is near it; read both)`),
+      ...(d.near ?? []).map((n) => `- New, near P${n.near}: ${n.title}`),
     );
   }
   out.push("", "## Findings");
@@ -66,6 +68,19 @@ export function renderReport(state, { minutesElapsed, changedFiles = [], head = 
     out.push("| ID | Severity | Status | Where | Reviewers | Finding |", "|---|---|---|---|---|---|");
     for (const e of state.ledger) out.push(`| ${e.id} | ${e.severity} | ${e.status} | ${loc(e)} | ${e.reviewers.join(" + ")} | ${e.title.replace(/\|/g, "\\|")} |`);
   }
+  // Evidence: what crossfire executed, what the builder claimed, what nobody checked.
+  const breakerItems = state.ledger.filter((e) => e.source === "breaker");
+  const reviewerFailures = (state.reviewerRuns ?? []).filter((r) => !r.ok);
+  out.push(
+    "",
+    "## Evidence",
+    `- Proof commands crossfire ran itself (last run, round ${state.lastProof?.round ?? "-"}):${state.lastProof?.commands?.length ? "" : " none declared"}`,
+    ...(state.lastProof?.commands ?? []).map((c) => `  - \`${c.command}\`: exit ${c.status}`),
+    `- Tests the builder named this loop: ${(state.testsNamed ?? []).length}${(state.testsNamed ?? []).length ? ` (${state.testsNamed.slice(0, 12).join(", ")}${state.testsNamed.length > 12 ? ", ..." : ""})` : ""}. Crossfire checks that they pass only through the proof commands above.`,
+    `- Breaker: ${state.breaker === false ? "off" : `${breakerItems.length} attack(s) proven with failing tests; ${breakerItems.filter((e) => e.status === "closed" || e.status === "claimed_fixed").length} hardened, ${breakerItems.filter((e) => e.status === "disputed_internal").length} disputed (left to the reviewers)`}`,
+    `- Reviewers read the branch diff against \`${state.base}\` read-only: ${reviewersText ?? "not recorded"}${reviewerFailures.length ? `; ${reviewerFailures.length} reviewer pass(es) did not complete` : ""}.`,
+    "- Not verified by crossfire: anything outside the proof commands (the full test suite, lint, migrations, deploys). CI on the pull request is that gate.",
+  );
   const accepted = state.ledger.filter((e) => e.status === "wontfix" || (shipped && e.status === "claimed_fixed" && e.severity === "NIT"));
   if (accepted.length) out.push("", `Accepted nits (G7, not re-reviewed): ${accepted.map((e) => e.id).join(", ")}`);
   if (!shipped) {

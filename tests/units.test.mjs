@@ -19,7 +19,7 @@ function stateWithFinding(severity = "CHANGES") {
   return s;
 }
 
-const RULE = { rule: "every write goes through the one versioned writer", variants: [{ scenario: "a", test: "t_a" }, { scenario: "b", test: "t_b" }, { scenario: "c", test: "t_c" }] };
+const RULE = { rule: "every write goes through the one versioned writer", where: "a.js:3", variants: [{ scenario: "a", test: "t_a" }, { scenario: "b", test: "t_b" }, { scenario: "c", test: "t_c" }] };
 const good = (fixes = []) => ({ status: "DONE", summary: "ok", commit: "a".repeat(40), tests: [{ name: "t1", passed: true }], fixes: fixes.map((f) => (f.status === "FIXED" ? { ...RULE, ...f } : f)) });
 
 test("a complete result validates", () => {
@@ -140,7 +140,7 @@ test("D: fixing a real finding needs the broadest rule and at least 3 tested var
 });
 
 test("breaker results: only proven attacks count; FAILED counts none; proven ones need a scenario and a test", () => {
-  const r = validateBreakerResult({ status: "DONE", attacks: [{ title: "a", scenario: "s", test: "t", proven: true, severity: "blocker", line: 3 }, { title: "idea", proven: false }] });
+  const r = validateBreakerResult({ status: "DONE", attacks: [{ title: "a", scenario: "s", test: "t", file: "a.js", proven: true, severity: "blocker", line: 3 }, { title: "idea", proven: false }] });
   assert.deepEqual(r.problems, []);
   assert.equal(r.attacks.length, 1);
   assert.equal(r.attacks[0].severity, "BLOCKER");
@@ -158,7 +158,7 @@ test("A: failure modes are counted under the spec's heading only", () => {
 
 import { compareWithPrevious } from "../plugins/crossfire/scripts/lib/referee.mjs";
 
-test("re-check delta: tagged re-flags and same-place findings are still open, the rest of the old ones are fixed", () => {
+test("re-check delta: only tagged re-flags are still open; an untagged finding near an old one is new (near Pn) and the old one unclear", () => {
   const prev = [
     { severity: "BLOCKER", title: "token unchecked", file: "a.js", lineStart: 10, lineEnd: 10 },
     { severity: "CHANGES", title: "missing index", file: "db.sql", lineStart: 3, lineEnd: 3 },
@@ -170,9 +170,10 @@ test("re-check delta: tagged re-flags and same-place findings are still open, th
     { severity: "BLOCKER", title: "new: deadlock", file: "c.js", lineStart: 5, lineEnd: 5 },
   ];
   const d = compareWithPrevious(prev, now);
-  assert.deepEqual(d.stillOpen.map((x) => [x.previous.index, x.how]), [[1, "re-flagged"], [2, "same place"]]);
+  assert.deepEqual(d.stillOpen.map((x) => [x.previous.index, x.how]), [[1, "re-flagged"]]);
+  assert.deepEqual(d.unclear.map((p) => p.index), [2], "not guessed fixed, not guessed open");
   assert.deepEqual(d.resolved.map((p) => p.index), [3]);
-  assert.deepEqual(d.fresh.map((f) => f.title), ["new: deadlock"]);
+  assert.deepEqual(d.fresh.map((f) => [f.title, f.nearPrevious ?? null]), [["index on the wrong column", 2], ["new: deadlock", null]]);
 });
 
 test("a reviewer that could not review (needs-attention, nothing itemised) is a failed review, not a finding", () => {
@@ -229,4 +230,10 @@ test("gh calls always name the remote's host, github.com included (GH_HOST canno
   const gh = { host: "github.com", owner: "acme", repo: "app" };
   assert.deepEqual(ghArgs(gh, ["api", "repos/acme/app/issues/7/comments"]).slice(-2), ["--hostname", "github.com"]);
   assert.deepEqual(ghArgs(gh, ["pr", "view", "7"]).slice(-2), ["--repo", "github.com/acme/app"]);
+});
+
+test("a proven breaker attack must say where the bug is (file and line)", () => {
+  const problems = validateBreakerResult({ status: "DONE", attacks: [{ title: "a", scenario: "s", test: "t", proven: true }] }).problems.join();
+  assert.match(problems, /file is required/);
+  assert.match(problems, /line is required/);
 });

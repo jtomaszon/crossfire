@@ -471,7 +471,7 @@ test("check --since: the reviewers get the earlier findings tagged, and the delt
   sb.queue("grok", approve);
   const r = sb.cf("check", "--base", "main", "--since", "pr-1", "--name", "pr-1-b");
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /SINCE pr-1 \([0-9a-f]{12}\): 1 fixed, 1 still open, 0 new/);
+  assert.match(r.stdout, /SINCE pr-1 \([0-9a-f]{12}\): 1 fixed, 1 still open, 0 unclear, 0 new/);
   assert.match(r.stdout, /fixed: \[P2\] missing index/);
   assert.match(r.stdout, /still open: \[P1\] token unchecked/);
   const focus = sb.calls("codex").at(-1).at(-1);
@@ -988,4 +988,35 @@ test("proof commands can change only while the builder is next", (t) => {
   const r = sb.cf("proof", "--slug", "demo", "--e2e", "true");
   assert.equal(r.status, 2);
   assert.match(r.stderr, /only while the builder is next/);
+});
+
+test("the SHIP report carries an Evidence block: what crossfire ran, what the builder named, what nobody verified", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  let next = init(sb, "--e2e", "grep -q v2 app.txt");
+  sb.build(next.resultFile, { tests: [{ name: "test_prints_v2", command: "node --test", passed: true }] });
+  sb.cf("built", "--slug", "demo");
+  sb.queue("codex", approve);
+  sb.queue("grok", approve);
+  next = sb.cf("review", "--slug", "demo", "--json").json();
+  const report = fs.readFileSync(next.report, "utf8");
+  assert.match(report, /## Evidence/);
+  assert.match(report, /`grep -q v2 app\.txt`: exit 0/);
+  assert.match(report, /Tests the builder named this loop: 1 \(test_prints_v2\)/);
+  assert.match(report, /Not verified by crossfire: .*CI on the pull request is that gate/);
+});
+
+test("a FIXED real finding without where (file:line) is refused; a proven attack without file and line is refused", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  let next = init(sb);
+  sb.build(next.resultFile);
+  sb.cf("built", "--slug", "demo");
+  sb.queue("codex", needs(finding("high", "x")));
+  sb.queue("grok", approve);
+  next = sb.cf("review", "--slug", "demo", "--json").json();
+  sb.build(next.resultFile, { fixes: [{ id: "F1", status: "FIXED", where: "somewhere", rule: "every write goes through the one versioned writer", variants: [{ test: "a" }, { test: "b" }, { test: "c" }] }] });
+  const r = sb.cf("built", "--slug", "demo");
+  assert.equal(r.status, 3);
+  assert.match(r.stdout, /F1: FIXED needs `where`, the file:line of the fix/);
 });

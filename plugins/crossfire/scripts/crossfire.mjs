@@ -16,7 +16,7 @@ import { appendLessons, lessonsBlock, lessonsFromCheck, lessonsFromLoop, memoryF
 import { classifyProofFailure, grokSocketHint, readHealth, recordAttempt, summarize } from "./lib/health.mjs";
 import { CrossfireError, EXIT, atomicWriteJson, minutesBetween, nowIso, readJsonFile, run, runShell, tail, writeText } from "./lib/util.mjs";
 
-const VERSION = "1.0.1";
+const VERSION = "1.1.0";
 
 const USAGE = `crossfire ${VERSION}: referee for a spec-first build -> review -> fix loop
 
@@ -455,6 +455,9 @@ function built(ctx, opts) {
       out(ctx, [statusLine(state, minutesBetween(state.startedAt)), "PROOF ENVIRONMENT: a proof command cannot run here (toolchain or PATH), so this is not the builder's fault. Nothing advanced; the builder's result is kept.", envFailureText(g0.failures), `FIX: crossfire proof --slug ${state.slug} --e2e "<working command>" [--invariant "<working command>"]... then run crossfire built --slug ${state.slug} again.`, `LOG: ${files.g0(dir, builtRound)}`].join("\n"), { environment: true, failures: g0.failures.filter((f) => f.kind === "environment") });
       return EXIT.ENVIRONMENT;
     }
+    // Evidence for the report: what crossfire itself ran, and which tests the builder named.
+    state.lastProof = { round: builtRound, at, commands: [...state.e2e, ...state.invariants].map((command) => ({ command, status: g0.failures.find((f) => f.command === command)?.status ?? 0 })) };
+    state.testsNamed = [...new Set([...(state.testsNamed ?? []), ...(result.tests ?? []).map((t) => t.name), ...(result.fixes ?? []).flatMap((f) => (f.variants ?? []).map((v) => v.test))].filter(Boolean))];
     afterBuild(state, result, g0, { at, minutesElapsed: minutesBetween(state.startedAt) });
     saveState(dir, state);
     const proofCount = state.e2e.length + state.invariants.length;
@@ -533,7 +536,7 @@ function check(ctx, opts) {
   let since = null;
   if (prev) {
     const d = compareWithPrevious(prev.findings, findings);
-    since = { id: prev.id, head: prev.head, resolved: d.resolved, stillOpen: d.stillOpen, fresh: d.fresh.length };
+    since = { id: prev.id, head: prev.head, resolved: d.resolved, stillOpen: d.stillOpen, unclear: d.unclear, fresh: d.fresh.length, near: d.fresh.filter((f) => f.nearPrevious).map((f) => ({ title: f.title, near: f.nearPrevious })) };
   }
   const record = { version: 1, id, at, repo, branch, head, base, baseSha, focus: opts.focus ?? prev?.focus ?? null, spec: opts.spec ? path.resolve(ctx.cwd, opts.spec) : null, reviewerRuns, reviewersText, reviews: ok, findings, approved: findings.length === 0, since };
   atomicWriteJson(path.join(dir, "check.json"), record);
@@ -550,7 +553,7 @@ function check(ctx, opts) {
     `CHECK ${id} · ${branch ?? "HEAD"} ${head.slice(0, 12)} against ${base}`,
     `REVIEWERS: ${reviewersText}`,
     ...results.filter((r) => !r.ok).map((r) => `WARNING: ${r.reviewer} did not review (${r.error}); this check rests on Codex alone.`),
-    ...(since ? [`SINCE ${since.id} (${since.head.slice(0, 12)}): ${since.resolved.length} fixed, ${since.stillOpen.length} still open, ${since.fresh} new`, ...since.resolved.map((p) => `  fixed: [P${p.index}] ${p.title}`), ...since.stillOpen.map((s) => `  still open: [P${s.previous.index}] ${s.previous.title}`)] : []),
+    ...(since ? [`SINCE ${since.id} (${since.head.slice(0, 12)}): ${since.resolved.length} fixed, ${since.stillOpen.length} still open, ${since.unclear.length} unclear, ${since.fresh} new`, ...since.resolved.map((p) => `  fixed: [P${p.index}] ${p.title}`), ...since.stillOpen.map((s) => `  still open: [P${s.previous.index}] ${s.previous.title}`), ...since.unclear.map((p) => `  unclear: [P${p.index}] ${p.title} (a new finding is near it; read both)`), ...since.near.map((n) => `  new (near P${n.near}): ${n.title}`)] : []),
     `VERDICT: ${findings.length ? `${findings.length} finding(s): ${counts}` : "APPROVED, nothing to fix"}`,
     ...findings.map((f, i) => `  ${i + 1}. ${f.severity} ${f.file ?? ""}${f.lineStart ? `:${f.lineStart}` : ""} ${f.title} (${f.reviewers.join("+")})`),
     `REPORT: ${report}`,

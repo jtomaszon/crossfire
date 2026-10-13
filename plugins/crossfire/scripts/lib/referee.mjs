@@ -246,22 +246,28 @@ export function afterBreak(state, attacks, { at, minutesElapsed }) {
  * again with its tag. Untagged findings at the same place also count as still open.
  */
 export function compareWithPrevious(previous, current) {
+  // Still open needs the reviewer's own tag ([Pn]). A new finding near an earlier one is
+  // reported as new, "near Pn", and that earlier finding as unclear: neither is guessed.
   const stillOpen = [];
   const fresh = [];
-  const seen = new Set();
+  const tagged = new Set();
+  const near = new Set();
   for (const f of current) {
     const tag = /\[P(\d+)\]/.exec(f.title ?? "")?.[1];
-    const byTag = tag ? previous[Number(tag) - 1] : null;
-    const byPlace = byTag ? null : previous.find((p, i) => !seen.has(i) && p.severity === f.severity && overlaps(p, f));
-    const match = byTag ?? byPlace;
-    if (match) {
-      const i = previous.indexOf(match);
-      if (!seen.has(i)) stillOpen.push({ previous: { index: i + 1, ...match }, now: f, how: byTag ? "re-flagged" : "same place" });
-      seen.add(i);
-    } else fresh.push(f);
+    const i = tag ? Number(tag) - 1 : -1;
+    if (i >= 0 && i < previous.length) {
+      if (!tagged.has(i)) stillOpen.push({ previous: { index: i + 1, ...previous[i] }, now: f, how: "re-flagged" });
+      tagged.add(i);
+      continue;
+    }
+    const j = previous.findIndex((p) => p.severity === f.severity && overlaps(p, f));
+    if (j >= 0) near.add(j);
+    fresh.push(j >= 0 ? { ...f, nearPrevious: j + 1 } : f);
   }
-  const resolved = previous.map((p, i) => ({ index: i + 1, ...p })).filter((p) => !seen.has(p.index - 1));
-  return { resolved, stillOpen, fresh };
+  const indexed = previous.map((p, i) => ({ index: i + 1, ...p }));
+  const unclear = indexed.filter((p) => !tagged.has(p.index - 1) && near.has(p.index - 1));
+  const resolved = indexed.filter((p) => !tagged.has(p.index - 1) && !near.has(p.index - 1));
+  return { resolved, stillOpen, unclear, fresh };
 }
 
 const TAG_RE = /\[(F\d+)\]/;

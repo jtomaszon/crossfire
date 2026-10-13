@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.0
+
+From the first outside review.
+
+- **Evidence in every SHIP and ESCALATE report:** the proof commands crossfire ran itself and their exit codes, the tests the builder named, what the breaker proved and how it was answered, what the reviewers read, and what crossfire did not verify (the full suite, lint, migrations, deploys: CI on the pull request is that gate).
+- **file:line everywhere:** a FIXED BLOCKER or CHANGES finding needs `where` (the file:line of the fix), and a proven breaker attack needs its `file` and `line`; the referee refuses results without them.
+- **"Still open" needs the reviewer's tag.** On a re-check, an earlier finding is still open only when a reviewer re-flags it with its `[Pn]` tag. An untagged finding near an earlier one is reported as new, "near Pn", and that earlier finding as unclear: never guessed fixed or open (it was a known issue).
+- **Skill descriptions start with their trigger phrases,** so Claude routes to the right skill.
+
 ## 1.0.1
 
 Public-repository hygiene, from the first outside review.
