@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.1
+
+Public-repository hygiene, from the first outside review.
+
+- README: what leaves your machine, what crossfire will never do, the loop as a numbered list, the plugin-dependencies requirement next to the install command, JARVIS explained; stale private-repository instructions and the old marketplace migration removed.
+- One wording for Grok Build's plan requirement in the README, the setup skill and `doctor`.
+- SECURITY.md (how to report, what crossfire is trusted with, what leaves your machine), CONTRIBUTING.md, issue and pull-request templates.
+
 ## 1.0.0
 
 First release under `jtomaszon/crossfire`. Same code as 0.7.0, rebranded: the marketplace is now `jtomaszon` (install `crossfire@jtomaszon`), and the history starts fresh here. Versions 0.1.0 to 0.7.0 below were developed privately before this repository existed.

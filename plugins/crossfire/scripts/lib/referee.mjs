@@ -2,7 +2,8 @@
 // No I/O here. The CLI gathers facts (builder result, test runs, reviews),
 // calls these functions, and persists the state they return.
 //
-// Gates (ported from the JARVIS build loop):
+// Gates (from JARVIS, the author's earlier private builder-reviewer loop; the lessons
+// behind each are in CHANGELOG.md):
 //   G0  proof        the declared E2E and invariant commands must pass before any review
 //   G1  malformed    one re-ask for a malformed builder result or reviewer output, then escalate
 //   G2  round cap    at most maxRounds builder legs (initial build included) before escalating
