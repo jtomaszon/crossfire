@@ -13,6 +13,15 @@ if (argv[0] === "setup" || argv[0] === "check") {
   process.stdout.write(JSON.stringify({ ready: process.env[`FAKE_${name.toUpperCase()}_READY`] !== "0", nextSteps: ["Run `codex login`."] }));
   process.exit(0);
 }
+// Test hook: commit in the repository while "reviewing", as another process might.
+if (process.env.FAKE_REVIEW_COMMIT_IN) {
+  const { execFileSync } = await import("node:child_process");
+  const repo = process.env.FAKE_REVIEW_COMMIT_IN;
+  fs.appendFileSync(path.join(repo, "moved.txt"), "x\n");
+  execFileSync("git", ["-c", "user.name=M", "-c", "user.email=m@example.com", "commit", "-qam", "moved during review", "--allow-empty"], { cwd: repo });
+  execFileSync("git", ["-c", "user.name=M", "-c", "user.email=m@example.com", "add", "-A"], { cwd: repo });
+  execFileSync("git", ["-c", "user.name=M", "-c", "user.email=m@example.com", "commit", "-qm", "moved during review (2)", "--allow-empty"], { cwd: repo });
+}
 const queueFile = path.join(dir, `${name}-queue.json`);
 const queue = JSON.parse(fs.readFileSync(queueFile, "utf8"));
 const next = queue.shift();

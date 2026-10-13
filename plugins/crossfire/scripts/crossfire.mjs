@@ -518,6 +518,10 @@ function check(ctx, opts) {
   if (grok !== "off" && !usable(plugins.grok)) reviewerRuns.push({ pass: 1, reviewer: "grok", ok: false, skipped: true, error: plugins.grok.problems[0] ?? "not installed" });
   const reviewersText = reviewersLine({ reviewPass: 1, reviewerRuns });
 
+  if (git.head(repo) !== head) {
+    out(ctx, `CHECK ${id}: the branch moved while the reviewers were reading it (${head.slice(0, 12)} -> ${String(git.head(repo)).slice(0, 12)}); nothing was recorded. Run crossfire check again.`, { id, discarded: true });
+    return EXIT.MALFORMED;
+  }
   const codex = results.find((r) => r.reviewer === "codex");
   if (!codex.ok) {
     out(ctx, [`CHECK ${id}: the Codex review failed: ${codex.error}`, "Nothing was recorded as a review. Run crossfire check again; if it keeps failing, run crossfire doctor."].join("\n"), { id, error: codex.error });
@@ -829,6 +833,14 @@ function review(ctx, opts) {
       state.reviewerRuns.push({ pass, reviewer: r.reviewer, ok: r.ok, seconds: r.seconds, verdict: r.verdict ?? null, findings: r.ok ? r.findings.length : null, error: r.ok ? null : String(r.error).split("\n")[0].slice(0, 300) });
     }
     if (state.grok !== "off" && !usable(plugins.grok)) state.reviewerRuns.push({ pass, reviewer: "grok", ok: false, skipped: true, error: plugins.grok.problems[0] ?? "not installed" });
+    // Reviews take minutes and review the live checkout: if HEAD moved meanwhile, they may
+    // have read an unverified commit. Discard them; nothing advances.
+    if (state.lastBuildHead && git.head(state.repo) !== state.lastBuildHead) {
+      state.history.push({ at, event: "review-discarded", detail: "HEAD moved during the review" });
+      saveState(dir, state);
+      out(ctx, [statusLine(state, minutesBetween(state.startedAt)), `DISCARDED: HEAD moved while the reviewers were reading the branch (verified ${state.lastBuildHead.slice(0, 12)}, now ${String(git.head(state.repo)).slice(0, 12)}); their verdicts are not recorded. Restore the branch to the verified commit and run review again.`].join("\n"), { discarded: true });
+      return EXIT.MALFORMED;
+    }
     const codex = results.find((r) => r.reviewer === "codex");
     if (!codex.ok) {
       const esc = noteMalformed(state, `review-p${pass}-codex`, codex.error, at);

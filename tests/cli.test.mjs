@@ -944,3 +944,24 @@ test("review refuses a HEAD that the proof commands did not verify", (t) => {
   assert.match(r.stderr, /HEAD is not the commit the proof commands verified/);
   assert.equal(sb.calls("codex").filter((a) => a[0] === "adversarial-review").length, 0, "no reviewer ran");
 });
+
+test("reviews read the live checkout: if HEAD moves during a review, the verdicts are discarded (review and check)", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  const next = init(sb);
+  sb.build(next.resultFile);
+  sb.cf("built", "--slug", "demo");
+  sb.queue("codex", approve);
+  sb.queue("grok", approve);
+  sb.env.FAKE_REVIEW_COMMIT_IN = sb.repo;
+  const r = sb.cf("review", "--slug", "demo");
+  assert.equal(r.status, 3);
+  assert.match(r.stdout, /DISCARDED: HEAD moved while the reviewers were reading/);
+  assert.equal(sb.cf("status", "--slug", "demo", "--json").json().next.action, "RUN_REVIEW", "nothing advanced");
+  sb.queue("codex", approve);
+  sb.queue("grok", approve);
+  const c = sb.cf("check", "--base", "main", "--name", "moving");
+  assert.equal(c.status, 3);
+  assert.match(c.stdout, /the branch moved while the reviewers were reading it/);
+  assert.ok(!fs.existsSync(`${sb.repo}/.crossfire/checks/moving/check.json`), "no check recorded");
+});
