@@ -247,7 +247,7 @@ test("G3 and G4 escalations: a re-flagged fix is reported as re-flagged, and the
   assert.ok(["G3", "G4"].includes(next.gate));
   const report = renderReport(s, { minutesElapsed: 2 });
   assert.match(report, /Claimed fixed, then re-flagged \(or flagged at the same place\) by a reviewer: F1 \(BLOCKER\), F2 \(BLOCKER\)/);
-  assert.doesNotMatch(report, /not re-reviewed/);
+  assert.doesNotMatch(report, /Claimed fixed by the builder, not re-reviewed/);
   assert.match(report, /Still open: F3 \(CHANGES\)/);
   assert.match(report, /a\.js:10 \(fix: a\.js:10\)/);
 });
@@ -369,4 +369,15 @@ test("the report says when the breaker was skipped or failed instead of counting
   afterBreak(s2, [], t);
   afterReview(s2, [codex([])], t);
   assert.match(renderReport(s2, { minutesElapsed: 2 }), /- Breaker: 0 pass\(es\) completed, 1 failed/);
+});
+
+test("the escalation report carries the unattended limits", () => {
+  const s = fresh();
+  afterBuild(s, done(), green, t);
+  afterReview(s, [codex([f("BLOCKER", "hole")])], t);
+  noteMalformed(s, "build", "x", at);
+  noteMalformed(s, "build", "x", at);
+  const report = renderReport(s, { minutesElapsed: 2 });
+  assert.match(report, /at most one new loop per escalation, and if it escalates too, stop and wait/);
+  assert.match(report, /never push, merge or open a PR for this branch while a BLOCKER or CHANGES finding/);
 });

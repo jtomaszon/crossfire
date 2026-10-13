@@ -128,7 +128,8 @@ export function renderReport(state, { minutesElapsed, changedFiles = [], head = 
         const h = [...e.history].reverse().find((x) => x.reflagged);
         return h ? [`  - ${e.id} re-flagged as: ${h.reflagged}${h.body ? `: ${h.body.split("\n")[0].slice(0, 300)}` : ""}`] : [];
       }),
-      "- Options: accept as is, give the builder a direction and start a new loop on top of this branch, or drop the change. The person who asked for the change decides, not an agent running the loop; any further code goes through a new loop.",
+      "- Options: accept as is, give the builder a direction and start a new loop on top of this branch, or drop the change. The person who asked for the change decides, not an agent running the loop.",
+      "- Only if the person said to run unattended may an agent decide, and then: any further code goes through a new crossfire loop; at most one new loop per escalation, and if it escalates too, stop and wait; never push, merge or open a PR for this branch while a BLOCKER or CHANGES finding above is open, re-flagged, disputed, or claimed fixed and not re-reviewed.",
     );
   }
   if (changedFiles.length) out.push("", "## Files changed", ...changedFiles.map((f) => `- ${f}`));

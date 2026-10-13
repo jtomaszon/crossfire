@@ -1110,6 +1110,32 @@ test("ladder: after SHIP it reports pushed, PR, CI and merged, and never writes"
   r = sb.cf("ladder", "--slug", "demo", "--repo", "acme/app");
   assert.match(r.stdout, /4\. merged: +yes/);
   assert.match(r.stdout, /verify it where it runs/);
+
+  // GitHub deletes the branch on merge: still merged, never "push the branch".
+  spawnSync("git", ["push", "-q", "origin", `:refs/heads/${branch}`], { cwd: sb.repo });
+  r = sb.cf("ladder", "--slug", "demo", "--repo", "acme/app");
+  assert.match(r.stdout, /1\. pushed: +no branch/);
+  assert.match(r.stdout, /verify it where it runs/);
+  assert.doesNotMatch(r.stdout, /push the branch/);
+
+  // A PR whose head this clone does not have: unknown, never "merge".
+  fs.writeFileSync(`${d}/prs.json`, JSON.stringify([{ number: 9, state: "OPEN", url: "https://example.test/pr/9", headRefOid: "1".repeat(40), isDraft: false }]));
+  r = sb.cf("ladder", "--slug", "demo", "--repo", "acme/app");
+  assert.match(r.stdout, /fetch .* and run the ladder again; do not merge/);
+
+  // A fork PR with the same branch name is ignored; an unrelated OPEN PR does not eclipse the merged one.
+  fs.writeFileSync(`${d}/prs.json`, JSON.stringify([
+    { number: 11, state: "OPEN", url: "https://example.test/pr/11", headRefOid: head, isDraft: false, isCrossRepository: true },
+    { number: 9, state: "MERGED", url: "https://example.test/pr/9", headRefOid: head, isDraft: false },
+  ]));
+  r = sb.cf("ladder", "--slug", "demo", "--repo", "acme/app");
+  assert.match(r.stdout, /2\. PR: +#9 merged/);
+
+  // gh failing: unknown, never "open a PR".
+  fs.writeFileSync(`${d}/fail`, "HTTP 502: Bad Gateway");
+  r = sb.cf("ladder", "--slug", "demo", "--repo", "acme/app");
+  assert.match(r.stdout, /2\. PR: +unknown/);
+  assert.match(r.stdout, /retry when gh works; do not open a PR or merge/);
 });
 
 test("ladder refuses a loop that has not shipped", (t) => {
