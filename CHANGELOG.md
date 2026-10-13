@@ -9,6 +9,7 @@ Public-repository hygiene, from the first outside review.
 - SECURITY.md (how to report, what crossfire is trusted with, what leaves your machine), CONTRIBUTING.md, issue and pull-request templates.
 - **Fix, found by reviewing these documents against the code:** a breaker that committed (leaving the tree clean) was refused once, then skipped on the second attempt, so review ran on a commit the proof commands never verified. HEAD drift is now refused every time; in a loop, `review` runs only on the commit the proof commands verified, and both `review` and `check` discard their verdicts if the branch moves while the reviewers read it.
 - The documents say precisely what is sent where (spec excerpts, earlier findings and the builder's answers reach the reviewers; "kept out of git" is not "never sent"), that Grok also runs on `crossfire check` whenever it is usable, and that the `crossfire` script never pushes or posts while the orchestrator does only when asked.
+- A discarded review leaves nothing behind (no review files, no reviewer runs counted toward the pass, no reviewer-health entry), and `crossfire proof` changes the proof commands only while the builder is next, so new commands always run before a review. The documents say plainly that reviewers read the live checkout: crossfire compares HEAD before and after, and cannot see a change that is reverted within the review.
 
 ## 1.0.0
 

@@ -957,11 +957,35 @@ test("reviews read the live checkout: if HEAD moves during a review, the verdict
   const r = sb.cf("review", "--slug", "demo");
   assert.equal(r.status, 3);
   assert.match(r.stdout, /DISCARDED: HEAD moved while the reviewers were reading/);
-  assert.equal(sb.cf("status", "--slug", "demo", "--json").json().next.action, "RUN_REVIEW", "nothing advanced");
+  const st = sb.cf("status", "--slug", "demo", "--json").json();
+  assert.equal(st.next.action, "RUN_REVIEW", "nothing advanced");
+  const runDir = `${sb.repo}/.crossfire/runs/demo`;
+  assert.deepEqual(fs.readdirSync(runDir).filter((f) => f.startsWith("review-")), [], "no review files written");
+  assert.deepEqual(JSON.parse(fs.readFileSync(`${runDir}/state.json`, "utf8")).reviewerRuns ?? [], [], "no reviewer runs recorded");
   sb.queue("codex", approve);
   sb.queue("grok", approve);
   const c = sb.cf("check", "--base", "main", "--name", "moving");
   assert.equal(c.status, 3);
   assert.match(c.stdout, /the branch moved while the reviewers were reading it/);
   assert.ok(!fs.existsSync(`${sb.repo}/.crossfire/checks/moving/check.json`), "no check recorded");
+  assert.ok(!fs.existsSync(`${sb.repo}/.crossfire/checks/moving/review-codex.json`), "no review file kept");
+  // Back on the verified commit, the next pass counts once.
+  delete sb.env.FAKE_REVIEW_COMMIT_IN;
+  spawnSync("git", ["reset", "-q", "--hard", JSON.parse(fs.readFileSync(`${runDir}/state.json`, "utf8")).lastBuildHead], { cwd: sb.repo });
+  sb.queue("codex", approve);
+  sb.queue("grok", approve);
+  const ok = sb.cf("review", "--slug", "demo");
+  assert.equal(ok.status, 0, ok.stdout + ok.stderr);
+  assert.match(ok.stdout, /REVIEWERS: codex 1\/1 passes, grok 1\/1 passes/);
+});
+
+test("proof commands can change only while the builder is next", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  const next = init(sb);
+  sb.build(next.resultFile);
+  sb.cf("built", "--slug", "demo");
+  const r = sb.cf("proof", "--slug", "demo", "--e2e", "true");
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /only while the builder is next/);
 });
