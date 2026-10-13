@@ -1,0 +1,12 @@
+{
+  "name": "crossfire",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Claude Code plugin: spec-first build -> review -> fix loop with cross-vendor reviewers",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": { "node": ">=18.18" },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  }
+}

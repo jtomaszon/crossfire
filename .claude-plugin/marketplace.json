@@ -1,0 +1,18 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "jtomaszon",
+  "owner": { "name": "Javier Tomas Zon" },
+  "description": "Crossfire: spec-first build and review loop with cross-vendor reviewers",
+  "allowCrossMarketplaceDependenciesOn": ["openai-codex", "claude-plugins-official"],
+  "plugins": [
+    {
+      "name": "crossfire",
+      "source": "./plugins/crossfire",
+      "description": "Spec-first build -> review -> fix loop. A referee script enforces round caps and stop gates; OpenAI Codex reviews every round (required), xAI Grok Build adds a second review when installed.",
+      "dependencies": [
+        { "name": "codex", "marketplace": "openai-codex" },
+        { "name": "superpowers", "marketplace": "claude-plugins-official" }
+      ]
+    }
+  ]
+}

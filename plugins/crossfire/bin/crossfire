@@ -1,0 +1,17 @@
+#!/usr/bin/env node
+// On Claude's PATH while the crossfire plugin is enabled. CommonJS on purpose:
+// an extensionless file is CommonJS on every Node version from 18 up.
+"use strict";
+const path = require("node:path");
+const { pathToFileURL } = require("node:url");
+
+const entry = pathToFileURL(path.join(__dirname, "..", "scripts", "crossfire.mjs")).href;
+import(entry).then(
+  (m) => {
+    process.exitCode = m.main(process.argv.slice(2));
+  },
+  (e) => {
+    process.stderr.write(`crossfire: failed to load: ${e.stack || e}\n`);
+    process.exitCode = 70;
+  },
+);

@@ -1,0 +1,28 @@
+#!/usr/bin/env node
+// Stands in for codex-companion.mjs / grok-bridge.mjs. Each call is logged to
+// <queue dir>/<name>-calls.jsonl; review answers are popped from <name>-queue.json.
+import fs from "node:fs";
+import path from "node:path";
+
+const name = path.basename(path.dirname(path.dirname(process.argv[1]))); // <name>/scripts/<script>
+const dir = process.env.FAKE_REVIEW_DIR;
+const argv = process.argv.slice(2);
+fs.appendFileSync(path.join(dir, `${name}-calls.jsonl`), `${JSON.stringify(argv)}\n`);
+
+if (argv[0] === "setup" || argv[0] === "check") {
+  process.stdout.write(JSON.stringify({ ready: process.env[`FAKE_${name.toUpperCase()}_READY`] !== "0", nextSteps: ["Run `codex login`."] }));
+  process.exit(0);
+}
+const queueFile = path.join(dir, `${name}-queue.json`);
+const queue = JSON.parse(fs.readFileSync(queueFile, "utf8"));
+const next = queue.shift();
+fs.writeFileSync(queueFile, JSON.stringify(queue));
+if (next === undefined) {
+  process.stderr.write("fake-reviewer: queue empty\n");
+  process.exit(1);
+}
+if (typeof next === "string") {
+  process.stdout.write(next); // raw (possibly broken) output
+  process.exit(next.startsWith("{") ? 0 : 1);
+}
+process.stdout.write(JSON.stringify({ review: "Adversarial Review", result: next, parseError: null }));

@@ -1,0 +1,6 @@
+{
+  "name": "crossfire-plugin",
+  "private": true,
+  "type": "commonjs",
+  "description": "Keeps bin/crossfire (extensionless) CommonJS on every Node version; scripts/*.mjs are ES modules by extension."
+}
