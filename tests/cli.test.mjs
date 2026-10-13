@@ -1124,15 +1124,62 @@ test("ladder: after SHIP it reports pushed, PR, CI and merged as facts, and neve
   fs.writeFileSync(`${d}/prs.json`, JSON.stringify([pr({ state: "MERGED", baseRefName: "release" })]));
   assert.match(ladder().stdout, /4\. merged: +into release, not the loop's base main/);
 
-  // A closed PR that contains the commit is shown; a fork PR is ignored; an unknown head is unknown.
+  // A fork PR that contains the commit counts; a closed one is shown when nothing better exists.
   fs.writeFileSync(`${d}/prs.json`, JSON.stringify([pr({ number: 11, isCrossRepository: true }), pr({ state: "CLOSED" })]));
+  assert.match(ladder().stdout, /2\. PR: +#11 open \(from a fork\)/);
+  fs.writeFileSync(`${d}/prs.json`, JSON.stringify([pr({ state: "CLOSED" })]));
   assert.match(ladder().stdout, /2\. PR: +#9 closed/);
+
+  // Merged into release first, then into main: merged into the loop's base wins, the other is named.
+  fs.writeFileSync(`${d}/prs.json`, JSON.stringify([pr({ number: 12, state: "MERGED", baseRefName: "release" }), pr({ state: "MERGED" })]));
+  r = ladder();
+  assert.match(r.stdout, /2\. PR: +#9 merged into main .*also merged: #12 into release/);
+  assert.match(r.stdout, /4\. merged: +yes, into main/);
+
+  // A merged PR whose head this clone lacks keeps merged unknown, even next to a verified closed PR.
+  fs.writeFileSync(`${d}/prs.json`, JSON.stringify([pr({ state: "CLOSED" }), pr({ number: 13, state: "MERGED", headRefOid: "3".repeat(40) })]));
+  assert.match(ladder().stdout, /4\. merged: +unknown/);
+
+  // The PR merges while the ladder reads it: the state read back last wins.
+  fs.writeFileSync(`${d}/prs.json`, JSON.stringify([pr()]));
+  fs.writeFileSync(`${d}/view-state`, "MERGED");
+  assert.match(ladder().stdout, /4\. merged: +yes, into main/);
+  fs.rmSync(`${d}/view-state`);
+
+  // An unknown head is unknown.
   fs.writeFileSync(`${d}/prs.json`, JSON.stringify([pr({ headRefOid: "1".repeat(40) })]));
   assert.match(ladder().stdout, /unknown whether it contains/);
 
   // gh failing: unknown.
   fs.writeFileSync(`${d}/fail`, "HTTP 502: Bad Gateway");
   assert.match(ladder().stdout, /2\. PR: +unknown/);
+});
+
+test("ladder: a loop with no recorded branch needs --branch; a remote-qualified base matches GitHub's base name", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  const next = init(sb);
+  sb.build(next.resultFile);
+  sb.cf("built", "--slug", "demo");
+  sb.queue("codex", approve);
+  sb.queue("grok", approve);
+  sb.cf("review", "--slug", "demo");
+  const stateFile = `${sb.repo}/.crossfire/runs/demo/state.json`;
+  const st = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+  const branch = st.branch;
+  delete st.branch;
+  st.base = "upstream/main";
+  fs.writeFileSync(stateFile, JSON.stringify(st));
+  spawnSync("git", ["remote", "add", "upstream", path.join(sb.tmp, "nowhere.git")], { cwd: sb.repo });
+  spawnSync("git", ["remote", "add", "origin", path.join(sb.tmp, "nowhere2.git")], { cwd: sb.repo });
+  let r = sb.cf("ladder", "--slug", "demo", "--repo", "acme/app");
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /no recorded branch .* pass --branch/);
+  const d = ghDir(sb);
+  fs.writeFileSync(`${d}/prs.json`, JSON.stringify([{ number: 9, state: "MERGED", url: "u", headRefOid: st.lastBuildHead, baseRefName: "main", isDraft: false }]));
+  r = sb.cf("ladder", "--slug", "demo", "--repo", "acme/app", "--branch", branch);
+  assert.match(r.stdout, /\(base main\)/);
+  assert.match(r.stdout, /4\. merged: +yes, into main/);
 });
 
 test("ladder refuses a --repo that is not the remote's repository", (t) => {
