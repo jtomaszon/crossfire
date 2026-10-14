@@ -19,7 +19,7 @@ Its own test (serving `/index.html`) passes. It has two bugs: `/../secret.txt` r
 
 ## Reproduce it
 
-[tiny-static/](tiny-static/) is the run's `main`, byte for byte, and [00-the-pr.diff](00-the-pr.diff) is the pull request (rebuilt from the function above and the fix diff; the run's PR commit was not kept). From the root of a crossfire checkout:
+[tiny-static/](tiny-static/) is the run's `main`, byte for byte, and [00-the-pr.diff](00-the-pr.diff) is the run's pull request commit, as a diff against it. From the root of a crossfire checkout:
 
 ```bash
 EX="$PWD/docs/example"

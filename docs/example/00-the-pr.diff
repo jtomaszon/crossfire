@@ -1,5 +1,5 @@
 diff --git a/src/serve.mjs b/src/serve.mjs
-index 19164f9..690106a 100644
+index 19164f9..504e3f5 100644
 --- a/src/serve.mjs
 +++ b/src/serve.mjs
 @@ -1,2 +1,10 @@
@@ -8,7 +8,7 @@ index 19164f9..690106a 100644
 +
  export const PUBLIC_DIR = "public";
 +
-+/** The file to serve for an HTTP request path. */
++/** The absolute path of the file to serve for an HTTP request path. */
 +export function resolvePublic(root, requestPath) {
 +  const decoded = decodeURIComponent(requestPath);
 +  return path.join(root, PUBLIC_DIR, decoded);
