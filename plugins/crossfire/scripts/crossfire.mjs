@@ -16,7 +16,7 @@ import { appendLessons, lessonsBlock, lessonsFromCheck, lessonsFromLoop, memoryF
 import { classifyProofFailure, grokSocketHint, readHealth, recordAttempt, summarize } from "./lib/health.mjs";
 import { CrossfireError, EXIT, atomicWriteJson, minutesBetween, nowIso, readJsonFile, run, runShell, tail, writeText } from "./lib/util.mjs";
 
-const VERSION = "1.2.1";
+const VERSION = "1.3.0";
 
 const USAGE = `crossfire ${VERSION}: referee for a spec-first build -> review -> fix loop
 
@@ -33,9 +33,12 @@ Usage:
                                        people only, if given), or it closes; then exit. Comments are shown
                                        until acknowledged with --ack (at least once, never lost)
   crossfire spec --slug <slug>         where to write the spec and plan (git ignores them), and this repo's memory
+  crossfire respec --from-loop <slug> --slug <new-slug> [--force]
+                                       start over: draft a new spec from a finished loop, with every finding
+                                       as a known failure mode; the new loop starts from the base
   crossfire memory                     what reviewers found in this repository before
   crossfire init --slug <slug> --spec <file> [--base <ref>] [--e2e <cmd>]... [--invariant <cmd>]...
-                 [--max-rounds 5] [--max-minutes 45] [--grok auto|on|off] [--breaker on|off]
+                 [--max-rounds 3] [--max-minutes 45] [--grok auto|on|off] [--breaker on|off]
                  [--plan <file>] [--force] [--no-preflight] [--no-failure-modes] [--from-check <id>]
                                        --from-check: start at the fix round with that check's findings
                                        init first checks every proof command can run here (preflight)
@@ -92,11 +95,27 @@ function out(ctx, text, data) {
 }
 
 /** Write whatever the next action needs (brief or report) and print it. */
+/** A builder or breaker result sitting on disk that crossfire has not recorded: the loop is stalled. */
+export function stalledResult(dir, state) {
+  const next = state.next ?? {};
+  const file = next.action === ACTIONS.SEND_BUILDER ? files.result(dir, state.round, next.brief) : next.action === ACTIONS.SEND_BREAKER ? files.breakerResult(dir, state.round) : null;
+  if (!file || !fs.existsSync(file)) return null;
+  const at = fs.statSync(file).mtime;
+  // A result crossfire already looked at and turned down (malformed, or a proof command that
+  // could not run) is not stalled until it is written again.
+  const seen = (state.history ?? []).filter((h) => h.event === "malformed" || h.event === "proof-env-failed").map((h) => Date.parse(h.at)).filter(Number.isFinite);
+  if (seen.length && Math.max(...seen) >= at.getTime()) return null;
+  const minutes = Math.max(0, Math.round((Date.now() - at.getTime()) / 60000));
+  const then = next.action === ACTIONS.SEND_BUILDER ? "built" : "attacked";
+  return { file, minutes, line: `STALLED: the ${next.action === ACTIONS.SEND_BUILDER ? "builder" : "breaker"} wrote its result ${minutes} min ago (${at.toISOString().slice(11, 16)}Z) and crossfire has not recorded it: run crossfire ${then} --slug ${state.slug} now` };
+}
+
 function emitNext(ctx, dir, state, extra = []) {
   const minutes = minutesBetween(state.startedAt);
   const next = state.next;
-  const lines = [statusLine(state, minutes), ...extra];
-  const data = { slug: state.slug, phase: state.phase, round: state.round, reviewPass: state.reviewPass, next };
+  const stalled = isTerminal(state) ? null : stalledResult(dir, state);
+  const lines = [statusLine(state, minutes), ...(stalled ? [stalled.line] : []), ...extra];
+  const data = { slug: state.slug, phase: state.phase, round: state.round, reviewPass: state.reviewPass, next, stalled: stalled ? { file: stalled.file, minutes: stalled.minutes } : null };
 
   if (next.action === ACTIONS.SEND_BUILDER) {
     const brief = files.brief(dir, state.round, next.brief);
@@ -306,11 +325,14 @@ function init(ctx, opts) {
     throw new CrossfireError(`the Codex reviewer is required and not usable: ${plugins.codex.problems.join("; ") || "codex@openai-codex is not installed"}. Run \`crossfire doctor\`.`, EXIT.ENVIRONMENT);
   }
   let preflight = "skipped (--no-preflight)";
+  let preflightMinutes = null;
   const proofCommands = [...opts.e2e, ...opts.invariant];
   if (!opts["no-preflight"] && proofCommands.length) {
     // Before any build: every proof command must at least be able to run here.
     // Failing because the feature is not built yet is expected and fine.
+    const preStart = Date.now();
     const pre = runCommands(proofCommands, repo, 10 * 60 * 1000);
+    preflightMinutes = (Date.now() - preStart) / 60000;
     const env = pre.failures.filter((f) => f.kind === "environment");
     if (env.length) {
       throw new CrossfireError(`preflight: ${env.length} proof command(s) cannot run in this environment, so the builder could never make them pass:\n${envFailureText(pre.failures)}\nFix the command (toolchain, PATH, version manager) and run init again. Nothing was started.`, EXIT.ENVIRONMENT);
@@ -339,7 +361,7 @@ function init(ctx, opts) {
       baseSha,
       e2e: opts.e2e,
       invariants: opts.invariant,
-      maxRounds: intOpt(opts, "max-rounds", 5, 1, 10),
+      maxRounds: intOpt(opts, "max-rounds", 3, 1, 10),
       maxMinutes: intOpt(opts, "max-minutes", 45, 5, 24 * 60),
       grok,
       breaker: breakerOpt === "on",
@@ -357,7 +379,16 @@ function init(ctx, opts) {
     }
     saveState(dir, state);
     const skew = versionSkew(VERSION, plugins.installedSelf);
-    emitNext(ctx, dir, state, [`PREFLIGHT: ${preflight}`, ...(skew ? [`WARNING: ${skew}`] : [])]);
+    const proofCount = state.e2e.length + state.invariants.length;
+    const heavy = [];
+    if (proofCount > 6) heavy.push(`${proofCount} proof commands`);
+    if (preflightMinutes != null && preflightMinutes > 5) heavy.push(`a ${Math.round(preflightMinutes)}-minute first run`);
+    emitNext(ctx, dir, state, [
+      `PREFLIGHT: ${preflight}`,
+      ...(heavy.length ? [`WARNING: ${heavy.join(" and ")}; they run on every builder round. Keep proof commands to what this change touches (the tests for the code it changes, plus a check it must not break); the full suite is CI's job on the pull request.`] : []),
+      "AGENTS: this loop needs 2 concurrent agents: you, and one builder or breaker at a time. With a cap of N concurrent agents, run at most N/2 loops at once.",
+      ...(skew ? [`WARNING: ${skew}`] : []),
+    ]);
     return EXIT.OK;
   });
 }
@@ -788,6 +819,70 @@ export function countFailureModes(text) {
   return n;
 }
 
+// ---- respec (start over from a rewritten spec) ----------------------------
+
+/**
+ * Draft a new spec from a finished loop: the old spec plus every finding and proven attack as a
+ * known failure mode the new loop must test from the start. Writes only the draft; no git.
+ */
+export function renderRespec(old, specText) {
+  const loc = (e) => (e.file ? `${e.file}${e.lineStart ? `:${e.lineStart}` : ""}` : "no location");
+  const known = (old.ledger ?? []).filter((e) => e.severity !== "NIT").map((e) => {
+    const rule = [...(e.history ?? [])].reverse().find((h) => h.rule)?.rule;
+    const fixAt = [...(e.history ?? [])].reverse().find((h) => h.builder && h.where)?.where;
+    const again = [...(e.history ?? [])].reverse().find((h) => h.reflagged)?.reflagged;
+    return `- (known from loop ${old.slug}, ${e.id} ${e.severity}, ${e.source === "breaker" ? "proven by the breaker" : `found by ${(e.reviewers ?? []).join(" + ")}`}) ${e.title} [${loc(e)}]${rule ? ` Rule the fix had to enforce: ${rule}.` : ""}${fixAt ? ` The last attempt fixed it at ${fixAt}.` : ""}${again ? ` A reviewer re-flagged that fix: ${again}.` : ""} Status when the loop stopped: ${e.status}. This loop tests it from the start.`;
+  });
+  const header = [
+    `<!-- crossfire respec: drafted from loop "${old.slug}" (${old.terminal?.kind ?? old.phase}${old.terminal?.gate ? ` at ${old.terminal.gate}` : ""}). Review and simplify it with the person who owns the change before crossfire init. -->`,
+    "",
+  ];
+  const restart = [
+    "",
+    `## Starting over from loop ${old.slug}`,
+    "",
+    `- The previous attempt is a reference only: its branch is not merged and this loop does not build on it. Start from \`${old.base}\`.`,
+    "- Where the known failure modes cluster, prefer a simpler design over more guards. Name what you removed or changed in the design, and why it avoids those failures.",
+    "",
+  ];
+  const lines = String(specText ?? "").split("\n");
+  const start = lines.findIndex((l) => /^#{2,3}\s*how (this|it) could fail\b/i.test(l.trim()));
+  if (start === -1) return [...header, ...lines, ...restart, "## How this could fail", "", ...known, ""].join("\n");
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i += 1) if (/^#{1,3}\s/.test(lines[i])) {
+    end = i;
+    break;
+  }
+  while (end > start + 1 && !lines[end - 1].trim()) end -= 1;
+  return [...header, ...lines.slice(0, end), ...known, ...lines.slice(end), ...restart].join("\n");
+}
+
+function respec(ctx, opts) {
+  if (!opts["from-loop"]) throw new CrossfireError("--from-loop <slug> is required: the loop to start over from");
+  if (!opts.slug) throw new CrossfireError("--slug <new-slug> is required: the new loop's name");
+  if (opts.slug === opts["from-loop"]) throw new CrossfireError("the new loop needs its own --slug");
+  const { state: old } = requireLoop(ctx.cwd, opts["from-loop"]);
+  if (!isTerminal(old)) throw new CrossfireError(`loop ${old.slug} is still running (${old.phase}); start over only after it ships or escalates`);
+  runDir(ctx.cwd, opts.slug); // validates the slug
+  const repo = git.repoRoot(ctx.cwd);
+  ensureExcluded(repo);
+  const file = path.join(crossfireRoot(repo), "specs", `${opts.slug}.md`);
+  if (fs.existsSync(file) && !opts.force) throw new CrossfireError(`${file} exists; pass --force to overwrite it`);
+  if (!old.spec || !fs.existsSync(old.spec)) throw new CrossfireError(`loop ${old.slug}'s spec ${old.spec ?? "(none recorded)"} is gone; write the new spec by hand from crossfire report --slug ${old.slug}`);
+  const draft = renderRespec(old, readSpec(old.spec));
+  writeText(file, draft);
+  const known = (old.ledger ?? []).filter((e) => e.severity !== "NIT").length;
+  out(ctx, [
+    `RESPEC ${old.slug} -> ${opts.slug}`,
+    `SPEC FILE: ${file} (draft: the old spec plus ${known} known failure mode(s) and a "Starting over" section)`,
+    `NEXT: review and simplify the draft with the person who owns the change, get their yes, then start from the base, not from ${old.slug}'s branch:`,
+    `  git switch -c <new-branch> ${old.base}`,
+    `  crossfire init --slug ${opts.slug} --spec ${file} --base ${old.base} [--e2e <cmd>]...`,
+    "Nothing else changed: no branch, no loop, no commit.",
+  ].join("\n"), { from: old.slug, slug: opts.slug, specFile: file, known, base: old.base });
+  return EXIT.OK;
+}
+
 // ---- proof ---------------------------------------------------------------
 
 function proof(ctx, opts) {
@@ -884,7 +979,8 @@ function status(ctx, opts) {
       out(ctx, "No crossfire loops in this repository.", { runs: [] });
       return EXIT.OK;
     }
-    out(ctx, runs.map((s) => statusLine(s, minutesBetween(s.startedAt))).join("\n"), { runs: runs.map((s) => ({ slug: s.slug, phase: s.phase, round: s.round, next: s.next })) });
+    const rows = runs.map((s) => ({ s, stalled: isTerminal(s) ? null : stalledResult(runDir(ctx.cwd, s.slug), s) }));
+    out(ctx, rows.map(({ s, stalled }) => `${statusLine(s, minutesBetween(s.startedAt))}${stalled ? `\n  ${stalled.line}` : ""}`).join("\n"), { runs: rows.map(({ s, stalled }) => ({ slug: s.slug, phase: s.phase, round: s.round, next: s.next, stalled: stalled ? { file: stalled.file, minutes: stalled.minutes } : null })) });
     return EXIT.OK;
   }
   const { dir, state } = requireLoop(ctx.cwd, opts.slug);
@@ -1120,7 +1216,7 @@ export function main(argv = process.argv.slice(2)) {
       process.stdout.write(`${USAGE}\n`);
       return cmd || opts.help ? EXIT.OK : EXIT.USAGE;
     }
-    const commands = { doctor: () => doctor(ctx), memory: () => memoryCmd(ctx), check: () => check(ctx, opts), checks: () => checks(ctx), watch: () => watch(ctx, opts), spec: () => specCmd(ctx, opts), proof: () => proof(ctx, opts), attacked: () => attacked(ctx, opts), init: () => init(ctx, opts), built: () => built(ctx, opts), review: () => review(ctx, opts), status: () => status(ctx, opts), report: () => report(ctx, opts), ladder: () => ladder(ctx, opts) };
+    const commands = { doctor: () => doctor(ctx), memory: () => memoryCmd(ctx), check: () => check(ctx, opts), checks: () => checks(ctx), watch: () => watch(ctx, opts), spec: () => specCmd(ctx, opts), proof: () => proof(ctx, opts), attacked: () => attacked(ctx, opts), init: () => init(ctx, opts), built: () => built(ctx, opts), review: () => review(ctx, opts), status: () => status(ctx, opts), report: () => report(ctx, opts), ladder: () => ladder(ctx, opts), respec: () => respec(ctx, opts) };
     if (!commands[cmd]) throw new CrossfireError(`unknown command "${cmd}"\n\n${USAGE}`);
     return commands[cmd]();
   } catch (e) {

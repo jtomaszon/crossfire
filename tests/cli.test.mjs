@@ -1268,3 +1268,64 @@ test("ladder refuses a loop that has not shipped", (t) => {
   assert.equal(r.status, 2);
   assert.match(r.stderr, /has not shipped/);
 });
+
+test("init: 3 rounds by default, says a loop needs 2 concurrent agents, and warns about heavy proof commands", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  const many = Array.from({ length: 7 }, (_, i) => ["--invariant", `true ${i}`]).flat();
+  const r = sb.cf("init", "--slug", "demo", "--spec", sb.spec, "--base", "main", ...many);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /round 1\/3/);
+  assert.match(r.stdout, /AGENTS: this loop needs 2 concurrent agents/);
+  assert.match(r.stdout, /WARNING: 7 proof commands; they run on every builder round/);
+});
+
+test("status flags a builder result crossfire has not recorded (STALLED), but not one it already rejected", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  const next = init(sb);
+  sb.build(next.resultFile);
+  let r = sb.cf("status", "--slug", "demo");
+  assert.match(r.stdout, /STALLED: the builder wrote its result \d+ min ago .* run crossfire built --slug demo now/);
+  assert.match(sb.cf("status").stdout, /STALLED/, "the repository-wide status flags it too");
+  fs.writeFileSync(next.resultFile, JSON.stringify({ status: "DONE" })); // malformed
+  sb.cf("built", "--slug", "demo");
+  r = sb.cf("status", "--slug", "demo");
+  assert.doesNotMatch(r.stdout, /STALLED/, "a result crossfire already turned down is not stalled");
+});
+
+test("respec drafts a new spec from an escalated loop: every finding becomes a known failure mode; no git changes", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  let next = init(sb);
+  sb.build(next.resultFile);
+  sb.cf("built", "--slug", "demo");
+  sb.queue("codex", needs(finding("high", "stale read on retry", "app.txt", 1)));
+  sb.queue("grok", approve);
+  next = sb.cf("review", "--slug", "demo", "--json").json();
+  sb.build(next.resultFile, { fixes: [{ id: "F1", status: "DISPUTED", note: "not a bug" }] });
+  assert.match(sb.cf("built", "--slug", "demo").stdout, /ESCALATE/);
+  const before = spawnSync("git", ["status", "--porcelain"], { cwd: sb.repo, encoding: "utf8" }).stdout;
+  const headBefore = spawnSync("git", ["rev-parse", "HEAD"], { cwd: sb.repo, encoding: "utf8" }).stdout;
+  const r = sb.cf("respec", "--from-loop", "demo", "--slug", "demo-2");
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /RESPEC demo -> demo-2/);
+  assert.match(r.stdout, /git switch -c <new-branch> main/);
+  const file = /SPEC FILE: (\S+)/.exec(r.stdout)[1];
+  const draft = fs.readFileSync(file, "utf8");
+  assert.match(draft, /\(known from loop demo, F1 BLOCKER, found by codex\) stale read on retry \[app\.txt:1\]/);
+  assert.match(draft, /## Starting over from loop demo/);
+  assert.match(draft, /Start from `main`/);
+  assert.equal(spawnSync("git", ["status", "--porcelain"], { cwd: sb.repo, encoding: "utf8" }).stdout, before);
+  assert.equal(spawnSync("git", ["rev-parse", "HEAD"], { cwd: sb.repo, encoding: "utf8" }).stdout, headBefore);
+  assert.match(sb.cf("respec", "--from-loop", "demo", "--slug", "demo-2").stderr, /exists; pass --force/);
+});
+
+test("respec refuses a loop that is still running", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  init(sb);
+  const r = sb.cf("respec", "--from-loop", "demo", "--slug", "demo-2");
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /still running/);
+});

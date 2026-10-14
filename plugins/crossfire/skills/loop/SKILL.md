@@ -40,7 +40,7 @@ crossfire init --slug <slug> --spec <spec path> --plan <plan path> --base <base 
   --e2e "<command>" --invariant "<command>"
 ```
 
-Optional: `--max-rounds` (default 5), `--max-minutes` (default 45), `--grok on|off` (default auto: used when installed).
+Optional: `--max-rounds` (default 3), `--max-minutes` (default 45), `--grok on|off` (default auto: used when installed).
 
 Init first runs every proof command once (preflight). Failing because the feature is not built yet is fine; a command that **cannot run here** (wrong Ruby or Node toolchain, missing binary, version manager not on PATH) stops init with exit 5. Fix the command, usually by using the toolchain the repository's own instructions name, and run init again. Never work around it with `--no-preflight` unless the user says so.
 
@@ -48,28 +48,37 @@ Init first runs every proof command once (preflight). Failing because the featur
 
 Every `crossfire` command ends with a `NEXT ACTION`. Do exactly what it says:
 
-**`SEND_BUILDER`**: dispatch the `crossfire:builder` subagent (Agent tool, `subagent_type: "crossfire:builder"`, in the foreground) with this prompt, filling in the two paths from crossfire's output:
+**`SEND_BUILDER`**: dispatch the `crossfire:builder` subagent with the Agent tool, `subagent_type: "crossfire:builder"` and **`run_in_background: false`** (always pass it: the Agent tool's default is the background, and a background builder's completion notice can go to someone else, so a loop running inside a subagent would wait forever). Use this prompt, filling in the two paths from crossfire's output:
 
 > Read the brief at `<BRIEF>` and follow it exactly. When you are done, write your result JSON to `<RESULT FILE>` as the brief describes, and reply with that path.
 
-When it returns, run `crossfire built --slug <slug>`.
+When it returns, run `crossfire built --slug <slug>`. Never resume a builder with SendMessage; dispatch a new one. If the Agent tool refuses the builder (a concurrent-agent limit), do not build it yourself: report up that the loop is blocked on agent capacity, and stop.
 - Exit 3 (**MALFORMED**): nothing advanced. Dispatch the builder again with the same prompt plus crossfire's list of problems, then run `crossfire built` again. A second malformed result escalates by itself.
 - Exit 5 with **PROOF ENVIRONMENT**: a proof command cannot run here; this is not the builder's fault and no round was spent. Fix the command with `crossfire proof --slug <slug> --e2e "<cmd>" --invariant "<cmd>"` (give the full new set), then run `crossfire built` again. Never restart the loop with `init --force` for this: that throws away its history.
 
-**`SEND_BREAKER`**: dispatch the `crossfire:breaker` subagent (Agent tool, `subagent_type: "crossfire:breaker"`, foreground) with:
+**`SEND_BREAKER`**: dispatch the `crossfire:breaker` subagent the same way (Agent tool, `subagent_type: "crossfire:breaker"`, `run_in_background: false`) with:
 
 > Read the breaker brief at `<BRIEF>` and follow it exactly. Write your result JSON to `<RESULT FILE>` and reply with that path.
 
 Then run `crossfire attacked --slug <slug>`. Proven attacks go back to the builder as one **harden** round (`SEND_BUILDER (harden)`, handled like any builder round); with none, the next action is the review. Exit 3: re-dispatch the breaker with crossfire's problems (a second bad result skips the breaker; it never blocks the loop).
 
-**`RUN_REVIEW`**: run `crossfire review --slug <slug>` with the Bash tool's `run_in_background: true` (a Codex review can take several minutes, longer than a foreground command may run) and wait for the completion notification; do not poll. Then read its output.
+**`RUN_REVIEW`**: a review takes several minutes, longer than one foreground command may run, so run it in the background with its output in a file, then wait for that file in the foreground. Never end your turn waiting for a completion notification: inside a subagent it may never reach you.
+
+1. With the Bash tool's `run_in_background: true`:
+   `crossfire review --slug <slug> > "${TMPDIR:-/tmp}/crossfire-<slug>-review.out" 2>&1; echo "CROSSFIRE-EXIT $?" >> "${TMPDIR:-/tmp}/crossfire-<slug>-review.out"`
+2. In the foreground, with the Bash tool's longest timeout:
+   `f="${TMPDIR:-/tmp}/crossfire-<slug>-review.out"; until grep -q CROSSFIRE-EXIT "$f"; do sleep 20; done; cat "$f"`
+   If that times out, run it again. If a completion notification arrives first, read the file then.
+3. The last line is the exit code; above it is crossfire's output.
 - Exit 3: the Codex review failed and nothing advanced; run `crossfire review` once more. Exit 5: a reviewer is not usable; show the user the message and stop.
 
 **`SHIP`**: tell the user it shipped, with the report path, a two-line summary (findings fixed, nits accepted), and the `REVIEWERS:` line as crossfire printed it, so the user knows whether Grok actually reviewed or the loop ran on Codex alone. Do not push, merge or open a PR unless the user asks; offer to. If they want to integrate the branch, **superpowers:finishing-a-development-branch** is the right next step. SHIP is not done: whenever the user asks where the change stands (or after they push), run `crossfire ladder --slug <slug>`; it reads whether the branch is pushed, the PR (and whether its head is exactly the shipped commit), its CI and whether it merged into the loop's base, and prints "unknown" for anything it cannot establish. Relay those facts; do not turn them into an action the user did not ask for. It never pushes, merges, posts or recommends; do not poll it in a loop.
 
-**`ESCALATE`**: stop. Show the user the gate, the reason, the `REVIEWERS:` line and the report's "What the owner needs to decide" section, and ask what they want: accept as is, a direction for a new loop on top of this branch, or drop it. This is a real decision point; never work around it.
+**`ESCALATE`**: stop. Show the user the gate, the reason, the `REVIEWERS:` line and the report's "What the owner needs to decide" section, and ask what they want: accept as is, a direction for a new loop on top of this branch, **start over from a rewritten spec**, or drop it. This is a real decision point; never work around it.
+- **Starting over** is the better choice when the report says "Consider starting over" (findings clustering in one place across passes, fixes re-flagged, new blockers after the first fixes): each patch there tends to open the next edge case. `crossfire respec --from-loop <slug> --slug <new-slug>` drafts a new spec from the old one with every finding as a known failure mode the new loop tests from the start. Review and simplify it with the user (this is a spec approval, like the first one), then create a fresh branch from the base and `init` the new loop there; the old branch is a reference and is never merged. Example: a cache change keeps getting new ordering edge cases; the new spec lists them all, and the builder designs for them instead of patching around them.
+- **At most one new loop per escalation** (a fix loop on top of the branch, or a respec). If that loop escalates too, stop and wait for the person.
 - **The person decides, not an agent.** If you are a coordinator or subagent running loops for someone, report the escalation up and wait; do not choose for them.
-- Only if the user said to run unattended may you decide yourself, and then: any further code goes through a **new crossfire loop** (never write, commit, push or merge code outside a loop after an escalation); start at most **one** new loop per escalation, and if it escalates too, stop and wait; never push, merge or open a PR for a branch whose loop escalated with a BLOCKER or CHANGES finding still open or unreviewed.
+- Only if the user said to run unattended may you choose yourself, and then: any further code goes through a **new crossfire loop** (never write, commit, push or merge code outside a loop after an escalation), and never push, merge or open a PR for a branch whose loop escalated with a BLOCKER or CHANGES finding still open or unreviewed.
 
 ## Rules while the loop runs
 
@@ -77,7 +86,15 @@ Then run `crossfire attacked --slug <slug>`. Proven attacks go back to the build
 - Valid findings go straight back to the builder: never stop to ask the user whether to fix them. The only stops are SHIP and ESCALATE.
 - Stay quiet in between: one short line per round at most ("round 2: Codex found 2 issues, builder fixing"). The user hears about SHIP or ESCALATE.
 - If a review prints `WARNING: <reviewer> did not review this pass`, mention it in your one-line update; the SHIP or ESCALATE report repeats it.
-- `crossfire status --slug <slug>` shows where a loop is, if you lose track. `crossfire status` lists every loop in the repository.
+- `crossfire status --slug <slug>` shows where a loop is, if you lose track. `crossfire status` lists every loop in the repository, and flags any loop whose builder or breaker wrote a result that crossfire has not recorded (`STALLED: ... run crossfire built`): run that command.
+
+## Running several loops at once
+
+Before starting loops in parallel, answer with numbers, and tell the user:
+- **Agents:** each loop needs **2 concurrent agents** (the one following it, plus a builder or breaker at a time). With a limit of N concurrent agents, run at most N/2 loops, and one loop per agent session.
+- **Merging:** how the branches will merge (one at a time, or a batch tested once), how long CI takes on a pull request, and how many PRs will be open at once. Prefer few open PRs and a plan written before the work starts.
+- **Proof commands:** what each one proves for its change. Keep them to what the change touches; the full suite is CI's job.
+- **Liveness:** whoever coordinates checks every loop at least hourly with `crossfire status` and acts on `STALLED`; "waiting" with no new step for an hour is a stall, not progress.
 - Several loops can run at once only in separate worktrees with separate slugs.
 
 ## Gates the referee enforces (for explaining an escalation)
