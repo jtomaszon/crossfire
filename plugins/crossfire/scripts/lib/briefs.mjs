@@ -1,7 +1,10 @@
 // Builder briefs (what the builder subagent reads) and validation of what it returns.
 import { itemsOwed } from "./referee.mjs";
 
-export const BUILD_STATUSES = ["DONE", "PARTIAL", "FAILED"];
+export const BUILD_STATUSES = ["DONE", "PARTIAL", "FAILED", "SPEC_MISMATCH"];
+export const HANDOFF_SEVERITIES = ["low", "medium", "high"];
+export const HANDOFF_FIELDS = ["summary", "tried", "situation", "synthesis"];
+export const HANDOFF_MAX_CHARS = 2000;
 export const FIX_STATUSES = ["FIXED", "DISPUTED", "WONTFIX"];
 
 function where(e) {
@@ -69,6 +72,25 @@ export function resultExample(owed) {
   );
 }
 
+/** What the builder returns when the spec cannot be built as written. */
+export function specMismatchExample() {
+  return JSON.stringify(
+    {
+      status: "SPEC_MISMATCH",
+      summary: "one sentence: why the spec cannot be built as written",
+      handoff: {
+        severity: "low, medium or high",
+        summary: "what does not fit: the contradiction, the wrong assumption about the code, or the scope that changes",
+        tried: "what you read and tried before stopping",
+        situation: "where the branch is now: what is committed, if anything",
+        synthesis: "what the spec would need to say instead (the owner decides)",
+      },
+    },
+    null,
+    2,
+  );
+}
+
 export const FAILURE_CATEGORIES = [
   "transactions, rollback and nested transactions (savepoints), callbacks that run after commit or rollback",
   "stale in-memory state: objects, caches or flags that do not match what was committed",
@@ -79,7 +101,7 @@ export const FAILURE_CATEGORIES = [
   "the boundaries the spec names: limits, permissions, time, money, external services failing",
 ];
 
-export function renderBrief(state, { resultFile, branch, failures, lessons = [] }) {
+export function renderBrief(state, { resultFile, branch, failures, lessons = [], precedents = [] }) {
   const owed = itemsOwed(state);
   const kind = state.next.brief;
   const title = {
@@ -91,7 +113,7 @@ export function renderBrief(state, { resultFile, branch, failures, lessons = [] 
   }[kind];
 
   const out = [
-    `# Crossfire builder brief: ${state.slug}, round ${state.round} of ${state.maxRounds}: ${title}`,
+    `# Crossfire builder brief: ${state.slug}, round ${state.round - (state.roundOffset ?? 0)} of ${state.maxRounds}: ${title}`,
     "",
     "## Read first",
     `- The spec: \`${state.spec}\` (read all of it; it is the contract).`,
@@ -107,6 +129,7 @@ export function renderBrief(state, { resultFile, branch, failures, lessons = [] 
     "- Before writing code, list for yourself how this change could fail (the spec's \"How this could fail\" section is the start, not the end), and write those tests first.",
     "",
     ...lessons,
+    ...precedents,
     "",
     "## Rules for every round",
     "- Work only in this repository and branch. Never push, merge, rebase onto another branch, or force-push.",
@@ -172,6 +195,12 @@ export function renderBrief(state, { resultFile, branch, failures, lessons = [] 
     "```",
     "",
     "`status` is DONE when the work is complete and committed, PARTIAL or FAILED otherwise (both stop the loop and go to the owner). Then reply with one line: the path of the result file.",
+    "",
+    "Use SPEC_MISMATCH when the spec cannot be built as written: it contradicts itself, it assumes something about the code that is not true, or building it would change its scope. Stop, do not work around it, and write this instead (each handoff field at most 2,000 characters; no tests, fixes or commit needed). It stops the loop and goes to the owner, who revises the spec:",
+    "",
+    "```json",
+    specMismatchExample(),
+    "```",
   );
   return `${out.join("\n")}\n`;
 }
@@ -186,6 +215,8 @@ export function validateBuildResult(result, state, repoFacts) {
   if (!result || typeof result !== "object" || Array.isArray(result)) return ["the result is not a JSON object"];
   if (!BUILD_STATUSES.includes(result.status)) problems.push(`status must be one of ${BUILD_STATUSES.join(", ")}`);
   if (typeof result.summary !== "string" || !result.summary.trim()) problems.push("summary is required");
+  // The spec does not fit: only the handoff is checked; tests, fixes, a commit and a clean tree are not owed.
+  if (result.status === "SPEC_MISMATCH") return [...problems, ...validateHandoff(result.handoff)];
   if (!Array.isArray(result.tests)) problems.push("tests must be an array");
   else {
     result.tests.forEach((t, i) => {
@@ -226,9 +257,22 @@ export function validateBuildResult(result, state, repoFacts) {
   return problems;
 }
 
+/** A SPEC_MISMATCH handoff: severity low|medium|high, and summary, tried, situation, synthesis (non-empty, at most 2,000 characters). */
+export function validateHandoff(handoff) {
+  if (!handoff || typeof handoff !== "object" || Array.isArray(handoff)) return ["SPEC_MISMATCH needs a handoff object: severity, summary, tried, situation, synthesis"];
+  const problems = [];
+  if (!HANDOFF_SEVERITIES.includes(handoff.severity)) problems.push(`handoff.severity must be one of ${HANDOFF_SEVERITIES.join(", ")}`);
+  for (const k of HANDOFF_FIELDS) {
+    const v = handoff[k];
+    if (typeof v !== "string" || !v.trim()) problems.push(`handoff.${k} is required (a non-empty string)`);
+    else if (v.length > HANDOFF_MAX_CHARS) problems.push(`handoff.${k} is ${v.length} characters; at most 2,000`);
+  }
+  return problems;
+}
+
 // ---- breaker ---------------------------------------------------------------
 
-export function renderBreakerBrief(state, { resultFile, branch, head, lessons = [] }) {
+export function renderBreakerBrief(state, { resultFile, branch, head, lessons = [], precedents = [] }) {
   const earlier = state.ledger.filter((e) => e.source !== "breaker");
   const out = [
     `# Crossfire breaker brief: ${state.slug}, round ${state.round}`,
@@ -241,6 +285,7 @@ export function renderBreakerBrief(state, { resultFile, branch, head, lessons = 
     ...(state.plan ? [`- The plan: \`${state.plan}\` (its Review Focus lists the failure modes the planner expected).`] : []),
     "- Do not read the builder's notes or result files: review the code cold.",
     ...lessons,
+    ...precedents,
     "",
     "## How to attack",
     "Go through each category and try to construct a concrete scenario where the change does the wrong thing:",

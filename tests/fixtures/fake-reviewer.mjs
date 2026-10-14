@@ -23,6 +23,14 @@ if (process.env.FAKE_REVIEW_COMMIT_IN) {
   execFileSync("git", ["-c", "user.name=M", "-c", "user.email=m@example.com", "add", "-A"], { cwd: repo });
   execFileSync("git", ["-c", "user.name=M", "-c", "user.email=m@example.com", "commit", "-qm", "moved during review (2)", "--allow-empty"], { cwd: repo });
 }
+// Test hook: record the diff this reviewer would read (its --cwd against its --base), and where.
+if (process.env.FAKE_REVIEW_RECORD_DIFF) {
+  const { execFileSync } = await import("node:child_process");
+  const cwd = argv[argv.indexOf("--cwd") + 1];
+  const base = argv[argv.indexOf("--base") + 1];
+  const diff = execFileSync("git", ["diff", `${base}...HEAD`], { cwd, encoding: "utf8" });
+  fs.appendFileSync(path.join(dir, `${name}-diffs.jsonl`), `${JSON.stringify({ cwd, base, diff })}\n`);
+}
 const queueFile = path.join(dir, `${name}-queue.json`);
 const queue = JSON.parse(fs.readFileSync(queueFile, "utf8"));
 const next = queue.shift();

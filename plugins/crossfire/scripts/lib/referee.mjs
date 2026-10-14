@@ -6,7 +6,9 @@
 // behind each are in CHANGELOG.md):
 //   G0  proof        the declared E2E and invariant commands must pass before any review
 //   G1  malformed    one re-ask for a malformed builder result or reviewer output, then escalate
-//   G2  round cap    at most maxRounds builder legs (initial build included) before escalating
+//   G2  round cap    at most maxRounds builder legs crossfire runs (initial build included; a
+//                    --from-check loop's pull request is not one) before escalating
+//   SPEC             the builder found the spec cannot be built as written (SPEC_MISMATCH)
 //   G3  convergence  a finding re-flagged after a claimed fix, or a disputed non-nit, escalates
 //   G4  suspect      a new finding at the same place as a claimed fix escalates
 //   G5  regression   a new blocker at review pass 2 or later escalates
@@ -70,6 +72,11 @@ export function newState({ slug, repo, spec, base, baseSha, e2e = [], invariants
   };
 }
 
+/** Builder legs crossfire has run: the round, less the pull request's own code in a 1.4 --from-check loop. */
+export function builderLegs(state) {
+  return state.round - (state.roundOffset ?? 0);
+}
+
 export function isTerminal(state) {
   return state.phase === "shipped" || state.phase === "escalated";
 }
@@ -78,9 +85,9 @@ function log(state, at, event, detail = "") {
   state.history.push({ at, event, detail });
 }
 
-function escalate(state, at, gate, reason) {
+function escalate(state, at, gate, reason, extra = {}) {
   state.phase = "escalated";
-  state.terminal = { kind: "escalated", gate, reason, at };
+  state.terminal = { kind: "escalated", gate, reason, at, ...extra };
   state.next = { action: ACTIONS.ESCALATE, gate, reason };
   log(state, at, `escalate:${gate}`, reason);
   return state.next;
@@ -161,6 +168,12 @@ function overBudget(state, minutesElapsed) {
 export function afterBuild(state, result, g0, { at, minutesElapsed }) {
   log(state, at, "build-recorded", `round ${state.round}: ${result.status}`);
 
+  // Before anything else, and whatever the proof commands say: the spec does not fit, so the
+  // owner revises it. No fix is recorded and nothing in the ledger changes.
+  if (result.status === "SPEC_MISMATCH") {
+    return escalate(state, at, "SPEC", `the builder found the spec cannot be built as written (${result.handoff?.severity ?? "?"}): ${result.handoff?.summary ?? result.summary ?? ""}`.trim(), { handoff: result.handoff ?? null });
+  }
+
   if (result.status !== "DONE") {
     return escalate(state, at, "BUILDER", `builder reported ${result.status}: ${result.summary ?? ""}`.trim());
   }
@@ -188,8 +201,8 @@ export function afterBuild(state, result, g0, { at, minutesElapsed }) {
   }
 
   if (!g0.passed) {
-    if (state.round >= state.maxRounds) {
-      return escalate(state, at, "G2", `G0 still failing after ${state.round} builder legs`);
+    if (builderLegs(state) >= state.maxRounds) {
+      return escalate(state, at, "G2", `G0 still failing after ${builderLegs(state)} builder legs`);
     }
     if (overBudget(state, minutesElapsed)) return budgetSpent(state, at);
     state.round += 1;
@@ -438,8 +451,8 @@ export function afterReview(state, reviews, { at, minutesElapsed }) {
     return sendBuilder(state, at, "nits");
   }
 
-  if (state.round >= state.maxRounds) {
-    return escalate(state, at, "G2", `${openAboveNit(state).length} finding(s) still open after ${state.round} builder legs`);
+  if (builderLegs(state) >= state.maxRounds) {
+    return escalate(state, at, "G2", `${openAboveNit(state).length} finding(s) still open after ${builderLegs(state)} builder legs`);
   }
   if (overBudget(state, minutesElapsed)) return budgetSpent(state, at);
   state.round += 1;
