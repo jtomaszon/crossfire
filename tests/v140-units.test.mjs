@@ -350,3 +350,77 @@ test("AC-15: diff size counts changed lines and files, lockfiles excluded", (t) 
   const size = diffSize(r.dir, r.base);
   assert.deepEqual(size, { lines: 300, files: 1 });
 });
+
+// ---- R4 hardening: weakening a test with added lines only -----------------------------
+// Rule: an existing test file may only grow, and what it grows by may not change whether its
+// existing lines run. Added lines must be self-contained (they may not open or close a comment,
+// string or block that existing lines fall inside), may not end control flow before existing
+// lines, may not rebind an assertion API, and may not take a skip or focus API by reference.
+
+function weakened(base, branch, file = "tests/app.test.mjs") {
+  const r = gitRepo();
+  r.write(file, base);
+  r.commit();
+  const base2 = r.g("rev-parse", "HEAD");
+  r.write(file, branch);
+  r.commit();
+  const res = testChanges(r.dir, base2, "");
+  r.cleanup();
+  return res.problems;
+}
+
+const APP = "test('a', () => {\n  assert.equal(compute(), 42);\n});\n";
+
+test("breaker: commenting out an existing assertion with added lines only is a weakened test", () => {
+  const p = weakened(APP, "test('a', () => {\n  /*\n  assert.equal(compute(), 42);\n  */\n});\n");
+  assert.ok(p.length > 0, "the assertion was disabled, but the guard reported nothing");
+  assert.match(p[0], /^tests\/app\.test\.mjs:3: added lines put an existing line inside a comment, string or block it was not in: "  assert\.equal\(compute\(\), 42\);"/);
+});
+
+test("R4 hardening: wrapping existing assertions in a block that never runs, with added lines only, is flagged", () => {
+  assert.ok(weakened(APP, "test('a', () => {\n  if (false) {\n  assert.equal(compute(), 42);\n  }\n});\n").length > 0, "if (false) { ... }");
+  assert.ok(weakened(APP, "test('a', () => {\n  function never() {\n  assert.equal(compute(), 42);\n  }\n});\n").length > 0, "a function nobody calls");
+  assert.ok(weakened(APP, "test('a', () => {\n  const s = `\n  assert.equal(compute(), 42);\n  `;\n});\n").length > 0, "a template string");
+  const py = "def test_a():\n    assert compute() == 42\n";
+  assert.ok(weakened(py, 'def test_a():\n    """\n    assert compute() == 42\n    """\n', "tests/test_app.py").length > 0, "a Python docstring");
+  const rb = "it 'a' do\n  expect(compute).to eq(42)\nend\n";
+  assert.ok(weakened(rb, "it 'a' do\n=begin\n  expect(compute).to eq(42)\n=end\nend\n", "spec/app_spec.rb").length > 0, "a Ruby =begin block");
+  assert.ok(weakened(rb, "it 'a' do\n  _ = <<~OFF\n  expect(compute).to eq(42)\n  OFF\nend\n", "spec/app_spec.rb").length > 0, "a Ruby heredoc");
+});
+
+test("R4 hardening: an early return or throw added before existing assertions is flagged", () => {
+  const p = weakened(APP, "test('a', () => {\n  return;\n  assert.equal(compute(), 42);\n});\n");
+  assert.equal(p.length, 1, JSON.stringify(p));
+  assert.match(p[0], /^tests\/app\.test\.mjs:2: adds an exit before existing test code: "  return;"/);
+  assert.equal(weakened(APP, "test('a', () => {\n  if (true) return;\n  assert.equal(compute(), 42);\n});\n").length, 1, "a constant condition is no condition");
+  const py = "def test_a():\n    x = compute()\n    assert x == 42\n";
+  assert.equal(weakened(py, "def test_a():\n    x = compute()\n    return\n    assert x == 42\n", "tests/test_app.py").length, 1, "Python");
+  assert.equal(weakened("it 'a' do\n  x = compute\n  expect(x).to eq(42)\nend\n", "it 'a' do\n  x = compute\n  next\n  expect(x).to eq(42)\nend\n", "spec/app_spec.rb").length, 1, "Ruby next out of the block");
+});
+
+test("R4 hardening: rebinding an assertion API or taking a skip API by reference is flagged", () => {
+  const k = (...parts) => parts.join("");
+  assert.equal(weakened(APP, `assert.equal = () => {};\n${APP}`).length, 1, "assert.equal reassigned");
+  assert.equal(weakened(APP, `Object.assign(assert, { equal() {} });\n${APP}`).length, 1, "assert patched");
+  assert.equal(weakened("import unittest\nclass T(unittest.TestCase):\n    def test_a(self):\n        self.assertEqual(1, 1)\n", "import unittest\nclass T(unittest.TestCase):\n    def setUp(self):\n        self.assertEqual = lambda *a: None\n    def test_a(self):\n        self.assertEqual(1, 1)\n", "tests/test_app.py").length, 1, "unittest assert method replaced");
+  const alias = weakened(APP, `${APP}const later = test${k(".", "skip")};\nlater('b', () => {});\n`);
+  assert.equal(alias.length, 1, JSON.stringify(alias));
+  assert.match(alias[0], /adds a skip or focus call/);
+  assert.ok(skipCallIn(k("const x = describe", ".only;")), "focus by reference");
+  assert.ok(!skipCallIn("const opts = { skip: true };"), "a skip option is still not a call");
+});
+
+test("R4 hardening: legitimate growth of an existing test file passes", () => {
+  const base = "describe('d', () => {\n  it('a', () => {\n    assert.equal(1, 1);\n  });\n});\n";
+  const grown = "describe('d', () => {\n  it('a', () => {\n    assert.equal(1, 1);\n  });\n\n  it('b', () => {\n    assert.equal(2, 2);\n  });\n});\n";
+  assert.deepEqual(weakened(base, grown), [], "a new test inside the describe, wherever git places the hunk");
+  const helper = "function load(x) {\n  const v = read(x);\n  return v;\n}\n";
+  assert.deepEqual(weakened(helper, "function load(x) {\n  if (!x) throw new Error('no input');\n  const v = read(x);\n  return v;\n}\n", "tests/helpers.mjs"), [], "a guard clause");
+  assert.deepEqual(weakened("function f() {\n  work();\n}\n", "function f() {\n  work();\n  return 1;\n}\n", "tests/helpers.mjs"), [], "a return at the end of a function");
+  assert.deepEqual(weakened(APP, `/**\n * The answer.\n */\n${APP}// it's done\n`), [], "a complete doc comment and a line comment");
+  assert.deepEqual(weakened("def test_a():\n    assert 1 == 1\n", "def test_a():\n    assert 1 == 1\n\ndef helper():\n    return 2\n\ndef test_b():\n    assert helper() == 2\n", "tests/test_app.py"), [], "a new Python function with a return");
+  const rb = "describe 'x' do\n  it 'a' do\n    expect(1).to eq(1)\n  end\nend\n";
+  assert.deepEqual(weakened(rb, "describe 'x' do\n  it 'a' do\n    expect(1).to eq(1)\n  end\n\n  it 'b' do\n    expect(url).to match(%r{/#{name}(-[a-f0-9]+)?\\.js})\n    expect(body).to include(\"#{h(\"# x\")}\")\n    text = <<~TXT\n      it's (open\n    TXT\n    expect(text).to be_present\n  end\nend\n", "spec/x_spec.rb"), [], "Ruby with a regexp, interpolation and a heredoc");
+  assert.deepEqual(weakened('{"a": 1}\n', '{"a": 1}\n(an unbalanced note\n', "tests/fixtures/data.txt"), [], "fixture data is not parsed as code");
+  assert.deepEqual(weakened(APP, `${APP}test('b', () => {\n  const s = \`multi\nline\`;\n  assert.ok(s);\n});\n`), [], "a complete template string");
+});

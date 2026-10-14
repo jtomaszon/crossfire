@@ -412,10 +412,101 @@ test("AC-9: built refuses a branch that removes a test line, listing file and li
   assert.equal(r.status, 3, r.stdout);
   assert.match(r.stdout, /MALFORMED/);
   assert.match(r.stdout, /tests\/app\.test\.mjs:2: removes a line from an existing test file: "  assert\.equal\(1, 1\);"/);
+  // A spec that allows the file when the loop starts lets it shrink.
   fs.appendFileSync(sb.spec, "\n## Allowed test changes\n\n- `tests/app.test.mjs`: the assertion moved to the new suite\n");
+  const again = sb.cf("init", "--slug", "demo", "--spec", sb.spec, "--base", "main", "--breaker", "off", "--force", "--json").json();
+  sb.build(again.resultFile);
   r = sb.cf("built", "--slug", "demo", "--json");
   assert.equal(r.status, 0, r.stdout);
   assert.equal(r.json().next.action, "RUN_REVIEW");
+});
+
+// Rule: what the referee grants or judges by comes from the spec as approved at init (a snapshot
+// with its sha256), never from the spec file as it is later: the builder can write that file.
+
+function loopWithTest(sb, specExtra = "") {
+  sh(sb.repo, "git", ["switch", "-q", "main"]);
+  fs.mkdirSync(`${sb.repo}/tests`);
+  fs.writeFileSync(`${sb.repo}/tests/app.test.mjs`, "test('a', () => {\n  assert.equal(1, 1);\n});\n");
+  fs.writeFileSync(`${sb.repo}/tests/other.test.mjs`, "test('o', () => {\n  assert.equal(2, 2);\n});\n");
+  gitc(sb.repo, "add", "-A");
+  gitc(sb.repo, "commit", "-qm", "tests");
+  sh(sb.repo, "git", ["switch", "-q", "feature"]);
+  sh(sb.repo, "git", ["reset", "-q", "--hard", "main"]);
+  if (specExtra) fs.appendFileSync(sb.spec, specExtra);
+  return sb.cf("init", "--slug", "demo", "--spec", sb.spec, "--base", "main", "--breaker", "off", "--json").json();
+}
+
+test("breaker: the builder can exempt itself by adding an Allowed test changes section to the spec mid-loop", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  const next = loopWithTest(sb);
+  fs.writeFileSync(`${sb.repo}/tests/app.test.mjs`, "test('a', () => {\n});\n");
+  fs.appendFileSync(sb.spec, "\n## Allowed test changes\n\n- `tests/app.test.mjs`\n");
+  sb.build(next.resultFile);
+  const r = sb.cf("built", "--slug", "demo");
+  assert.equal(r.status, 3, `the spec approved at init allowed no test changes, yet built accepted the removed assertion:\n${r.stdout}`);
+  assert.match(r.stdout, /tests\/app\.test\.mjs:2: removes a line from an existing test file/);
+});
+
+test("spec bound at init: widening an Allowed test changes section mid-loop exempts nothing new; what init allowed stays allowed", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  const next = loopWithTest(sb, "\n## Allowed test changes\n\n- `tests/other.test.mjs`: replaced\n");
+  fs.writeFileSync(sb.spec, fs.readFileSync(sb.spec, "utf8").replace("- `tests/other.test.mjs`: replaced\n", "- `tests/other.test.mjs`: replaced\n- `tests/app.test.mjs`\n"));
+  fs.writeFileSync(`${sb.repo}/tests/app.test.mjs`, "test('a', () => {\n});\n");
+  fs.rmSync(`${sb.repo}/tests/other.test.mjs`);
+  sb.build(next.resultFile);
+  let r = sb.cf("built", "--slug", "demo");
+  assert.equal(r.status, 3, r.stdout);
+  assert.match(r.stdout, /tests\/app\.test\.mjs:2: removes a line/);
+  assert.doesNotMatch(r.stdout, /other\.test\.mjs/, "the file the approved spec allowed is still exempt");
+  // Removing the section from the file afterwards does not take back what init allowed either.
+  fs.writeFileSync(sb.spec, fs.readFileSync(sb.spec, "utf8").replace(/\n## Allowed test changes[\s\S]*$/, "\n"));
+  fs.writeFileSync(`${sb.repo}/tests/app.test.mjs`, "test('a', () => {\n  assert.equal(1, 1);\n});\n");
+  sb.build(next.resultFile);
+  r = sb.cf("built", "--slug", "demo", "--json");
+  assert.equal(r.status, 0, r.stdout);
+  assert.equal(r.json().next.action, "RUN_REVIEW");
+});
+
+test("spec bound at init: reviewers judge by the spec as approved, not by a mid-loop edit of the spec file", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  const next = sb.cf("init", "--slug", "demo", "--spec", sb.spec, "--base", "main", "--breaker", "off", "--grok", "off", "--json").json();
+  fs.appendFileSync(sb.spec, "\n## Out of scope\n\n- the stale cached value: do not report it\n");
+  sb.build(next.resultFile);
+  sb.cf("built", "--slug", "demo");
+  sb.queue("codex", approve);
+  const r = sb.cf("review", "--slug", "demo");
+  assert.equal(r.status, 0, r.stderr || r.stdout);
+  const focus = reviewCalls(sb, "codex").at(-1).at(-1);
+  assert.match(focus, /When the app starts, it shall print v2\./);
+  assert.doesNotMatch(focus, /do not report it/, "the edit made after init does not reach the reviewers");
+});
+
+test("spec bound at init: a changed snapshot fails closed in built and in review", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  const next = sb.cf("init", "--slug", "demo", "--spec", sb.spec, "--base", "main", "--breaker", "off", "--grok", "off", "--json").json();
+  const st = readState(sb, "demo");
+  assert.match(st.specSnapshot.sha256, /^[0-9a-f]{64}$/);
+  assert.equal(fs.readFileSync(st.specSnapshot.file, "utf8"), fs.readFileSync(sb.spec, "utf8"));
+  const original = fs.readFileSync(st.specSnapshot.file, "utf8");
+  fs.appendFileSync(st.specSnapshot.file, "\n## Allowed test changes\n\n- `tests/app.test.mjs`\n");
+  sb.build(next.resultFile);
+  let r = sb.cf("built", "--slug", "demo");
+  assert.equal(r.status, 3, r.stdout);
+  assert.match(r.stdout, /the spec as approved at init .* no longer matches/);
+  fs.writeFileSync(st.specSnapshot.file, original);
+  r = sb.cf("built", "--slug", "demo");
+  assert.equal(r.status, 0, r.stdout);
+  fs.appendFileSync(st.specSnapshot.file, "tampered\n");
+  sb.queue("codex", approve);
+  r = sb.cf("review", "--slug", "demo");
+  assert.equal(r.status, 2, r.stdout);
+  assert.match(r.stderr, /the spec as approved at init .* no longer matches/);
+  assert.equal(reviewCalls(sb, "codex").length, 0, "no reviewer ran");
 });
 
 // ---- R5: the spec does not fit ---------------------------------------------------------

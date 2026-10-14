@@ -429,6 +429,11 @@ function init(ctx, opts) {
       startedAt: nowIso(),
     });
     state.plan = plan;
+    // The spec as approved here is what the referee grants and judges by for the whole loop (the
+    // allowed test changes, the reviewers' SPEC); the spec file itself stays writable by the builder.
+    const snapshot = files.specSnapshot(dir);
+    fs.writeFileSync(snapshot, specBytes);
+    state.specSnapshot = { file: snapshot, sha256: sha256(specBytes) };
     // 1.4: the settings this loop decided, read from state from now on (a loop without policy is a 1.3 loop).
     state.policy = 2;
     state.decided = decided;
@@ -639,6 +644,23 @@ function envFailureText(failures) {
     .join("\n");
 }
 
+/**
+ * The spec as approved at init: its snapshot, checked against the sha256 recorded then. Null for a
+ * loop started before 1.4 (no snapshot). A snapshot that is gone or changed throws (fail closed).
+ */
+function approvedSpec(state) {
+  if (!state.specSnapshot) return null;
+  const { file, sha256: want } = state.specSnapshot;
+  let bytes;
+  try {
+    bytes = fs.readFileSync(file);
+  } catch {
+    bytes = null;
+  }
+  if (!bytes || sha256(bytes) !== want) throw new CrossfireError(`the spec as approved at init (${file}) is missing or no longer matches the sha256 recorded then; nothing is judged against a changed spec. Restore it, or start a new loop from the revised spec (crossfire respec).`);
+  return bytes.toString("utf8");
+}
+
 function built(ctx, opts) {
   const { dir } = requireLoop(ctx.cwd, opts.slug);
   return withLock(dir, () => {
@@ -668,13 +690,15 @@ function built(ctx, opts) {
       });
       // The builder never weakens tests: read from the branch itself, not from the result.
       if (!problems.length && result.status === "DONE") {
+        // Exemptions come from the spec as approved at init, never from the file as it is now. A loop
+        // without a snapshot (started before 1.4) has none.
         let specText = "";
         try {
-          specText = readSpec(state.spec);
-        } catch {
-          /* no spec, no allowed test changes */
+          specText = approvedSpec(state) ?? "";
+        } catch (e) {
+          problems = [e.message];
         }
-        problems = testChanges(state.repo, state.baseSha, specText).problems.map((p) => `weakens tests: ${p} (existing test files may only grow; a file the spec's "## Allowed test changes" section names is exempt)`);
+        if (!problems.length) problems = testChanges(state.repo, state.baseSha, specText).problems.map((p) => `weakens tests: ${p} (existing test files may only grow; a file the "## Allowed test changes" section of the spec as approved at init names is exempt)`);
       }
     }
     if (problems.length) {
@@ -1155,7 +1179,7 @@ function review(ctx, opts) {
     const reviewers = [plugins.codex, ...(grokPlan.run ? [plugins.grok] : [])];
     const size = diffSize(state.repo, state.baseSha);
     const tooBig = sizeWarning(size);
-    const focus = buildFocus(state, { specText: readSpec(state.spec), precedents: readPrecedents(state.repo) });
+    const focus = buildFocus(state, { specText: approvedSpec(state) ?? readSpec(state.spec), precedents: readPrecedents(state.repo) });
     const results = reviewers.map((p) => runReviewer(p, { cwd: state.repo, base: state.baseSha, focus, timeoutMs }));
     const at = nowIso(); // the timeline records when the reviews finished, not when they started
 
