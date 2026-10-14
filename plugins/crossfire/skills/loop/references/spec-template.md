@@ -45,10 +45,12 @@ The builder may add tests but never edits, weakens or deletes these.
 
 ## Proof commands (passed to `crossfire init`)
 
-Crossfire runs these itself after every builder round; review only starts when all exit 0.
+Crossfire runs these itself after every builder round; review only starts when all exit 0. They run every round, so keep them to what this change touches, and say what each one proves. A command that proves nothing about this change is cost, not safety; the full suite is CI's job on the pull request.
 
-- `--e2e "<command that runs the E2E tests>"`
-- `--invariant "<command that checks an invariant, e.g. a lint rule or a grep that must find nothing>"`
+- `--e2e "<command that runs the E2E tests for this change>"`. Proves: `<which acceptance criteria>`
+- `--invariant "<command that checks an invariant, e.g. a lint rule or a grep that must find nothing>"`. Proves: `<what must not break>`
+
+Example: a docs-only change declares a link check (`--invariant "npm run check-links"`. Proves: no broken links), not the full test suite.
 
 ## Out of bounds
 

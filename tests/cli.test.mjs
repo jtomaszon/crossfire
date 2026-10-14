@@ -1268,3 +1268,107 @@ test("ladder refuses a loop that has not shipped", (t) => {
   assert.equal(r.status, 2);
   assert.match(r.stderr, /has not shipped/);
 });
+
+test("init: 3 rounds by default, says a loop needs 2 concurrent agents, and warns about heavy proof commands", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  const many = Array.from({ length: 7 }, (_, i) => ["--invariant", `true ${i}`]).flat();
+  const r = sb.cf("init", "--slug", "demo", "--spec", sb.spec, "--base", "main", ...many);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /round 1\/3/);
+  assert.match(r.stdout, /AGENTS: this loop needs 2 concurrent agents/);
+  assert.match(r.stdout, /WARNING: 7 proof commands; they run on every builder round/);
+});
+
+test("status flags a builder result crossfire has not recorded (STALLED), but not one it already rejected", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  const next = init(sb);
+  sb.build(next.resultFile);
+  let r = sb.cf("status", "--slug", "demo");
+  assert.match(r.stdout, /STALLED: the builder wrote its result \d+ min ago .* run crossfire built --slug demo now/);
+  assert.match(sb.cf("status").stdout, /STALLED/, "the repository-wide status flags it too");
+  fs.writeFileSync(next.resultFile, JSON.stringify({ status: "DONE" })); // malformed
+  sb.cf("built", "--slug", "demo");
+  r = sb.cf("status", "--slug", "demo");
+  assert.doesNotMatch(r.stdout, /STALLED/, "a result crossfire already turned down is not stalled");
+});
+
+test("respec drafts a new spec from an escalated loop: every finding becomes a known failure mode; no git changes", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  let next = init(sb);
+  sb.build(next.resultFile);
+  sb.cf("built", "--slug", "demo");
+  sb.queue("codex", needs(finding("high", "stale read on retry", "app.txt", 1)));
+  sb.queue("grok", approve);
+  next = sb.cf("review", "--slug", "demo", "--json").json();
+  sb.build(next.resultFile, { fixes: [{ id: "F1", status: "DISPUTED", note: "not a bug" }] });
+  assert.match(sb.cf("built", "--slug", "demo").stdout, /ESCALATE/);
+  const before = spawnSync("git", ["status", "--porcelain"], { cwd: sb.repo, encoding: "utf8" }).stdout;
+  const headBefore = spawnSync("git", ["rev-parse", "HEAD"], { cwd: sb.repo, encoding: "utf8" }).stdout;
+  const r = sb.cf("respec", "--from-loop", "demo", "--slug", "demo-2");
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /RESPEC demo -> demo-2/);
+  assert.match(r.stdout, /git switch -c <new-branch> main/);
+  const file = /SPEC FILE: (\S+)/.exec(r.stdout)[1];
+  const draft = fs.readFileSync(file, "utf8");
+  assert.match(draft, /\(known from loop demo, F1 BLOCKER, found by codex\) stale read on retry \[app\.txt:1\]/);
+  assert.match(draft, /## Starting over from loop demo/);
+  assert.match(draft, /Start from `main`/);
+  assert.equal(spawnSync("git", ["status", "--porcelain"], { cwd: sb.repo, encoding: "utf8" }).stdout, before);
+  assert.equal(spawnSync("git", ["rev-parse", "HEAD"], { cwd: sb.repo, encoding: "utf8" }).stdout, headBefore);
+  assert.match(sb.cf("respec", "--from-loop", "demo", "--slug", "demo-2").stderr, /exists; pass --force/);
+});
+
+test("respec refuses a loop that is still running", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  init(sb);
+  const r = sb.cf("respec", "--from-loop", "demo", "--slug", "demo-2");
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /still running/);
+});
+
+test("STALLED: a rejected breaker result is not stalled; a result kept back for a proof command is due again after crossfire proof", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  let next = init(sb, "--breaker", "on");
+  sb.build(next.resultFile);
+  next = sb.cf("built", "--slug", "demo", "--json").json();
+  fs.writeFileSync(next.resultFile, "{ not json");
+  sb.cf("attacked", "--slug", "demo");
+  assert.doesNotMatch(sb.cf("status", "--slug", "demo").stdout, /STALLED/, "already turned down");
+  fs.writeFileSync(next.resultFile, JSON.stringify({ status: "DONE", summary: "", attacks: [] }));
+  const later = new Date(Date.now() + 2000);
+  fs.utimesSync(next.resultFile, later, later);
+  assert.match(sb.cf("status", "--slug", "demo").stdout, /STALLED: the breaker wrote its result .* run crossfire attacked/);
+});
+
+test("a finished result that waits before crossfire records it is logged, and G6 names it", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  const next = init(sb);
+  sb.build(next.resultFile);
+  const old = new Date(Date.now() - 50 * 60000);
+  fs.utimesSync(next.resultFile, old, old);
+  sb.cf("built", "--slug", "demo");
+  const st = JSON.parse(fs.readFileSync(`${sb.repo}/.crossfire/runs/demo/state.json`, "utf8"));
+  assert.ok(st.history.some((h) => h.event === "result-unrecorded" && h.minutes >= 49), JSON.stringify(st.history.map((h) => h.event)));
+});
+
+test("respec keeps each finding's evidence, quoted so it is not counted as extra failure modes", async () => {
+  const { renderRespec, countFailureModes } = await import("../plugins/crossfire/scripts/crossfire.mjs");
+  const old = { slug: "a", base: "main", terminal: { kind: "escalated", gate: "G6" }, ledger: [
+    { id: "B1", source: "breaker", severity: "BLOCKER", title: "rollback loses the flag", file: "x.js", lineStart: 4, status: "open", reviewers: ["breaker"], history: [], body: "Scenario: nested rollback\n- step 1\n- step 2\nFailing test: t1", recommendation: "" },
+  ] };
+  const spec = "# S\n\n## How this could fail\n\n- one\n- two\n- three\n\n## Proof commands\n";
+  const draft = renderRespec(old, spec);
+  assert.match(draft, /> What was found: Scenario: nested rollback/);
+  assert.match(draft, /> Failing test: t1/);
+  assert.equal(countFailureModes(draft), 4, "three original plus one known");
+  const long = "x".repeat(4000);
+  const again = renderRespec({ ...old, ledger: [{ ...old.ledger[0], body: long, history: [{ builder: "FIXED", where: "x.js:4" }, { reflagged: "[B1] still loses it", body: "Retry path skips the guard", where: "x.js:9" }] }] }, spec);
+  assert.ok(again.includes(long), "long evidence is kept whole");
+  assert.match(again, /> What defeated the last fix: at x\.js:9: Retry path skips the guard/);
+});

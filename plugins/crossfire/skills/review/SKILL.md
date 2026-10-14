@@ -25,12 +25,18 @@ Never review in, or switch, the user's current checkout.
 
 ## 3. Run the check
 
-From the worktree, with the Bash tool's `run_in_background: true` (a review takes a minute or more), then wait for the completion notification:
+From the worktree. A review takes several minutes, so run it in the background with its output in a file of its own, then wait for that file in the foreground:
+
+1. `mktemp "${TMPDIR:-/tmp}/crossfire-check-XXXXXX"` prints a path, `<OUT>`; use a new one for every check.
+2. Bash tool, `run_in_background: true`:
 
 ```bash
 crossfire check --base origin/<base> --name pr-<n> \
-  --focus "<PR title>. <the PR description, trimmed to what it is for and what it changes>"
+  --focus "<PR title>. <the PR description, trimmed to what it is for and what it changes>" \
+  > <OUT> 2>&1; echo "CROSSFIRE-EXIT $?" >> <OUT>
 ```
+
+3. Foreground, the Bash tool's longest timeout: `until grep -q CROSSFIRE-EXIT <OUT>; do sleep 20; done; cat <OUT>`. If it times out, repeat only this wait, never the check. Never end your turn waiting for a completion notification: inside a subagent it may never reach you.
 
 Pass `--spec <file>` too if the user gave one. Exit 3 means the Codex review failed: run it once more. Exit 5: a reviewer is not usable; show the message and stop.
 
@@ -68,7 +74,7 @@ It wakes on a new push, a comment to handle (from the `--from` people only, if g
 
 **Comments are delivered at least once, until acknowledged.** Each one comes with an `ID:`. When you have handled it, acknowledge it as you start watching again: `crossfire watch --pr <n> --ack <ID> [--ack <ID>]...` (or `--ack all`). A comment you did not acknowledge is shown again on the next run, so nothing is lost if the session stops halfway; check its ID before acting twice. One watcher per PR: a second one is refused.
 
-Tell the user it is watching, then carry on; do not poll it. When its completion notification arrives, read its output:
+Tell the user it is watching, then carry on; do not poll it. When its completion notification arrives, read its output (inside a subagent, where that notification may not reach you, send the watcher's output to a file and check the file instead, as in step 3 above):
 
 - **`CHANGED <old> -> <new>`** (with an `ID: head:<sha>`): the author pushed. Update the review worktree to the new head (it is crossfire's own worktree, so this is safe): `git fetch origin pull/<n>/head && git reset --hard FETCH_HEAD`. Then re-check against the last check, numbering the new one:
   `crossfire check --base origin/<base> --since <last check id> --name pr-<n>-<k>` (background, as before).

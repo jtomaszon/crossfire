@@ -101,7 +101,7 @@ The check counts as the loop's first review pass.
 |---|---|
 | G0 proof | the spec's E2E and invariant commands fail (the builder gets the output and tries again; review only starts on green) |
 | G1 malformed | the builder's result or the Codex review is malformed twice in a row |
-| G2 round cap | findings are still open after `--max-rounds` builder rounds (default 5) |
+| G2 round cap | findings are still open after `--max-rounds` builder rounds (default 3) |
 | G3 convergence | a reviewer re-flags a finding the builder said it fixed, or the builder disputes a non-nit |
 | G4 suspect | a new finding lands where a fix was just claimed |
 | G5 regression | a brand-new blocker appears at review pass 2 or later |
@@ -128,7 +128,7 @@ crossfire memory                     what reviewers found in this repository bef
 crossfire check --since <id> --name <new id>   re-check after changes: fixed, still open, new
 crossfire watch --pr <n> | --branch <name> [--interval-sec 120] [--timeout-min 720]   wait for the PR to move
 crossfire init --slug <s> --spec <file> [--base <ref>] [--e2e <cmd>]... [--invariant <cmd>]...
-               [--max-rounds 5] [--max-minutes 45] [--grok auto|on|off]
+               [--max-rounds 3] [--max-minutes 45] [--grok auto|on|off]
 crossfire built --slug <s>           record the builder's result, run the proof commands
 crossfire attacked --slug <s>        record the breaker's result
 crossfire proof --slug <s> --e2e <cmd>... [--invariant <cmd>]...   replace a loop's proof commands
@@ -136,6 +136,7 @@ crossfire review --slug <s>          run Codex (+ Grok), record findings
 crossfire status [--slug <s>]        where a loop is and what comes next
 crossfire report --slug <s>          the SHIP or ESCALATE report
 crossfire ladder --slug <s>          after SHIP: pushed, PR, CI, merged (reads only; never pushes, merges or posts)
+crossfire respec --from-loop <s> --slug <new>   start over: a new spec with every finding as a known failure mode
 ```
 
 Every command prints a `NEXT ACTION`. Exit codes: 0 ok, 2 usage, 3 malformed (re-ask; nothing advanced), 4 loop already finished, 5 environment (a reviewer is missing or not logged in).
@@ -150,6 +151,16 @@ Claude cannot run the vendors' review slash commands itself (they are user-only)
 - Grok Build: `node <grok-build plugin>/scripts/grok-bridge.mjs critique --wait --json --base <base sha> --cwd <repo> "<focus>"`
 
 Both run read-only and return the same review schema. The focus text carries the spec and the list of earlier findings with their tags, so a reviewer can say "[F2] still not fixed" and the referee can tell a repeat from a new problem.
+
+## Before running many loops
+
+Crossfire runs one change per loop. Running many at once is a plan, not a default:
+
+- **2 concurrent agents per loop:** the one following it, plus a builder or breaker. With a limit of N concurrent agents, run at most N/2 loops.
+- **Merging:** decide how the branches merge before starting them (one at a time, or a batch tested once), how long CI takes per pull request, and how many PRs will be open at once.
+- **Proof commands:** each says what it proves for its change; the full suite belongs to CI.
+- **Liveness:** check `crossfire status` at least hourly. `STALLED` means a builder or breaker finished and nobody recorded it.
+- **Start over instead of patching:** when an escalation says "Consider starting over" (findings clustering in one place across passes, fixes re-flagged), `crossfire respec` drafts a new spec with every finding as a known failure mode, and the new loop starts from the base.
 
 ## Known issues
 
