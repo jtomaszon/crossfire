@@ -138,18 +138,16 @@ export function noteMalformed(state, key, reason, at) {
 
 /** G6 is checked only before a new builder or breaker leg starts: a finished leg always gets its review. */
 function budgetSpent(state, at) {
-  return escalate(state, at, "G6", `wall-clock budget of ${state.maxMinutes} min spent; no new builder leg started${idleNote(state, at)}`);
+  return escalate(state, at, "G6", `wall-clock budget of ${state.maxMinutes} min spent; no new builder leg started${idleNote(state)}`);
 }
 
-/** The longest wait between two recorded steps: a stalled agent, not slow work, often spends the budget. */
-export function idleNote(state, at) {
-  const times = [...(state.history ?? []).map((h) => ({ t: Date.parse(h.at), event: h.event })), { t: Date.parse(at), event: "now" }].filter((x) => Number.isFinite(x.t));
-  let gap = { minutes: 0, before: null };
-  for (let i = 1; i < times.length; i += 1) {
-    const minutes = (times[i].t - times[i - 1].t) / 60000;
-    if (minutes > gap.minutes) gap = { minutes, before: times[i].event };
-  }
-  return gap.minutes >= 30 ? ` (the longest wait between steps was ${Math.round(gap.minutes)} min, before ${gap.before}: check that agents are not stalled)` : "";
+/** Time a finished builder or breaker result sat unrecorded: a stall, not slow work. */
+export function idleNote(state) {
+  const waits = (state.history ?? []).filter((h) => h.event === "result-unrecorded" && Number.isFinite(h.minutes));
+  if (!waits.length) return "";
+  const total = waits.reduce((n, h) => n + h.minutes, 0);
+  const worst = waits.reduce((a, b) => (b.minutes > a.minutes ? b : a));
+  return ` (finished results waited ${total} min in all before anyone recorded them, ${worst.minutes} min at most: check that agents are not stalled)`;
 }
 
 function overBudget(state, minutesElapsed) {

@@ -62,14 +62,12 @@ When it returns, run `crossfire built --slug <slug>`. Never resume a builder wit
 
 Then run `crossfire attacked --slug <slug>`. Proven attacks go back to the builder as one **harden** round (`SEND_BUILDER (harden)`, handled like any builder round); with none, the next action is the review. Exit 3: re-dispatch the breaker with crossfire's problems (a second bad result skips the breaker; it never blocks the loop).
 
-**`RUN_REVIEW`**: a review takes several minutes, longer than one foreground command may run, so run it in the background with its output in a file, then wait for that file in the foreground. Never end your turn waiting for a completion notification: inside a subagent it may never reach you.
+**`RUN_REVIEW`**: a review takes several minutes, longer than one foreground command may run, so run it in the background with its output in a file of its own, then wait for that file in the foreground. Never end your turn waiting for a completion notification: inside a subagent it may never reach you.
 
-1. With the Bash tool's `run_in_background: true`:
-   `crossfire review --slug <slug> > "${TMPDIR:-/tmp}/crossfire-<slug>-review.out" 2>&1; echo "CROSSFIRE-EXIT $?" >> "${TMPDIR:-/tmp}/crossfire-<slug>-review.out"`
-2. In the foreground, with the Bash tool's longest timeout:
-   `f="${TMPDIR:-/tmp}/crossfire-<slug>-review.out"; until grep -q CROSSFIRE-EXIT "$f"; do sleep 20; done; cat "$f"`
-   If that times out, run it again. If a completion notification arrives first, read the file then.
-3. The last line is the exit code; above it is crossfire's output.
+1. Make a fresh output file (foreground): `mktemp "${TMPDIR:-/tmp}/crossfire-review-XXXXXX"`. It prints a path, `<OUT>`; use a new one for every review.
+2. Start the review (Bash tool, `run_in_background: true`): `crossfire review --slug <slug> > <OUT> 2>&1; echo "CROSSFIRE-EXIT $?" >> <OUT>`
+3. Wait for it (foreground, the Bash tool's longest timeout): `until grep -q CROSSFIRE-EXIT <OUT>; do sleep 20; done; cat <OUT>`. If this times out, run **only this step** again; never start a second review while one runs (crossfire would refuse it: "another crossfire command is running"; that means keep waiting).
+4. The last line is the exit code; above it is crossfire's output.
 - Exit 3: the Codex review failed and nothing advanced; run `crossfire review` once more. Exit 5: a reviewer is not usable; show the user the message and stop.
 
 **`SHIP`**: tell the user it shipped, with the report path, a two-line summary (findings fixed, nits accepted), and the `REVIEWERS:` line as crossfire printed it, so the user knows whether Grok actually reviewed or the loop ran on Codex alone. Do not push, merge or open a PR unless the user asks; offer to. If they want to integrate the branch, **superpowers:finishing-a-development-branch** is the right next step. SHIP is not done: whenever the user asks where the change stands (or after they push), run `crossfire ladder --slug <slug>`; it reads whether the branch is pushed, the PR (and whether its head is exactly the shipped commit), its CI and whether it merged into the loop's base, and prints "unknown" for anything it cannot establish. Relay those facts; do not turn them into an action the user did not ask for. It never pushes, merges, posts or recommends; do not poll it in a loop.

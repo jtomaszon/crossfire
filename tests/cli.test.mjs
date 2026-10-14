@@ -1329,3 +1329,42 @@ test("respec refuses a loop that is still running", (t) => {
   assert.equal(r.status, 2);
   assert.match(r.stderr, /still running/);
 });
+
+test("STALLED: a rejected breaker result is not stalled; a result kept back for a proof command is due again after crossfire proof", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  let next = init(sb, "--breaker", "on");
+  sb.build(next.resultFile);
+  next = sb.cf("built", "--slug", "demo", "--json").json();
+  fs.writeFileSync(next.resultFile, "{ not json");
+  sb.cf("attacked", "--slug", "demo");
+  assert.doesNotMatch(sb.cf("status", "--slug", "demo").stdout, /STALLED/, "already turned down");
+  fs.writeFileSync(next.resultFile, JSON.stringify({ status: "DONE", summary: "", attacks: [] }));
+  const later = new Date(Date.now() + 2000);
+  fs.utimesSync(next.resultFile, later, later);
+  assert.match(sb.cf("status", "--slug", "demo").stdout, /STALLED: the breaker wrote its result .* run crossfire attacked/);
+});
+
+test("a finished result that waits before crossfire records it is logged, and G6 names it", (t) => {
+  const sb = sandbox();
+  t.after(() => sb.cleanup());
+  const next = init(sb);
+  sb.build(next.resultFile);
+  const old = new Date(Date.now() - 50 * 60000);
+  fs.utimesSync(next.resultFile, old, old);
+  sb.cf("built", "--slug", "demo");
+  const st = JSON.parse(fs.readFileSync(`${sb.repo}/.crossfire/runs/demo/state.json`, "utf8"));
+  assert.ok(st.history.some((h) => h.event === "result-unrecorded" && h.minutes >= 49), JSON.stringify(st.history.map((h) => h.event)));
+});
+
+test("respec keeps each finding's evidence, quoted so it is not counted as extra failure modes", async () => {
+  const { renderRespec, countFailureModes } = await import("../plugins/crossfire/scripts/crossfire.mjs");
+  const old = { slug: "a", base: "main", terminal: { kind: "escalated", gate: "G6" }, ledger: [
+    { id: "B1", source: "breaker", severity: "BLOCKER", title: "rollback loses the flag", file: "x.js", lineStart: 4, status: "open", reviewers: ["breaker"], history: [], body: "Scenario: nested rollback\n- step 1\n- step 2\nFailing test: t1", recommendation: "" },
+  ] };
+  const spec = "# S\n\n## How this could fail\n\n- one\n- two\n- three\n\n## Proof commands\n";
+  const draft = renderRespec(old, spec);
+  assert.match(draft, /> What was found: Scenario: nested rollback/);
+  assert.match(draft, /> Failing test: t1/);
+  assert.equal(countFailureModes(draft), 4, "three original plus one known");
+});

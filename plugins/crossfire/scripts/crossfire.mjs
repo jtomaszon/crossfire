@@ -101,13 +101,30 @@ export function stalledResult(dir, state) {
   const file = next.action === ACTIONS.SEND_BUILDER ? files.result(dir, state.round, next.brief) : next.action === ACTIONS.SEND_BREAKER ? files.breakerResult(dir, state.round) : null;
   if (!file || !fs.existsSync(file)) return null;
   const at = fs.statSync(file).mtime;
-  // A result crossfire already looked at and turned down (malformed, or a proof command that
-  // could not run) is not stalled until it is written again.
-  const seen = (state.history ?? []).filter((h) => h.event === "malformed" || h.event === "proof-env-failed").map((h) => Date.parse(h.at)).filter(Number.isFinite);
-  if (seen.length && Math.max(...seen) >= at.getTime()) return null;
+  // A result crossfire already turned down (malformed) is not stalled until it is written again.
+  // One kept back because a proof command could not run is due again once the proof commands change.
+  let seen = null;
+  let seenKind = null;
+  for (const h of state.history ?? []) {
+    const t = Date.parse(h.at);
+    if (!Number.isFinite(t)) continue;
+    if (["malformed", "breaker-malformed", "proof-env-failed"].includes(h.event)) {
+      seen = t;
+      seenKind = h.event;
+    } else if (h.event === "proof-commands-changed" && seenKind === "proof-env-failed") seen = null;
+  }
+  if (seen != null && seen >= at.getTime()) return null;
   const minutes = Math.max(0, Math.round((Date.now() - at.getTime()) / 60000));
   const then = next.action === ACTIONS.SEND_BUILDER ? "built" : "attacked";
   return { file, minutes, line: `STALLED: the ${next.action === ACTIONS.SEND_BUILDER ? "builder" : "breaker"} wrote its result ${minutes} min ago (${at.toISOString().slice(11, 16)}Z) and crossfire has not recorded it: run crossfire ${then} --slug ${state.slug} now` };
+}
+
+/** A finished result that sat unrecorded for 5 minutes or more is a stall: log how long. */
+function noteResultWait(state, file, at, who) {
+  if (!fs.existsSync(file)) return;
+  const minutes = Math.round((Date.parse(at) - fs.statSync(file).mtime.getTime()) / 60000);
+  const last = [...(state.history ?? [])].reverse().find((h) => h.event === "result-unrecorded" && h.file === file);
+  if (minutes >= 5 && !last) state.history.push({ at, event: "result-unrecorded", detail: `the ${who} result waited ${minutes} min before crossfire recorded it`, minutes, file });
 }
 
 function emitNext(ctx, dir, state, extra = []) {
@@ -455,6 +472,7 @@ function built(ctx, opts) {
     const resultFile = files.result(dir, state.round, kind);
     const key = `build-r${state.round}-${kind}`;
     const at = nowIso();
+    noteResultWait(state, resultFile, at, "builder");
 
     let result = null;
     let problems = [];
@@ -765,6 +783,7 @@ function attacked(ctx, opts) {
     requireNext(state, ACTIONS.SEND_BREAKER);
     const at = nowIso();
     const file = files.breakerResult(dir, state.round);
+    noteResultWait(state, file, at, "breaker");
     let problems = [];
     let attacks = [];
     let result = null;
@@ -827,11 +846,18 @@ export function countFailureModes(text) {
  */
 export function renderRespec(old, specText) {
   const loc = (e) => (e.file ? `${e.file}${e.lineStart ? `:${e.lineStart}` : ""}` : "no location");
+  // The evidence itself (scenario, failing test, rule), indented under its item so it stays one list item.
+  const detail = (text, label) => {
+    const t = String(text ?? "").trim();
+    if (!t) return "";
+    const clipped = t.length > 1500 ? `${t.slice(0, 1500)}... (full text: crossfire report --slug ${old.slug})` : t;
+    return `\n  > ${label}: ${clipped.replace(/\n+/g, "\n  > ")}`;
+  };
   const known = (old.ledger ?? []).filter((e) => e.severity !== "NIT").map((e) => {
     const rule = [...(e.history ?? [])].reverse().find((h) => h.rule)?.rule;
     const fixAt = [...(e.history ?? [])].reverse().find((h) => h.builder && h.where)?.where;
     const again = [...(e.history ?? [])].reverse().find((h) => h.reflagged)?.reflagged;
-    return `- (known from loop ${old.slug}, ${e.id} ${e.severity}, ${e.source === "breaker" ? "proven by the breaker" : `found by ${(e.reviewers ?? []).join(" + ")}`}) ${e.title} [${loc(e)}]${rule ? ` Rule the fix had to enforce: ${rule}.` : ""}${fixAt ? ` The last attempt fixed it at ${fixAt}.` : ""}${again ? ` A reviewer re-flagged that fix: ${again}.` : ""} Status when the loop stopped: ${e.status}. This loop tests it from the start.`;
+    return `- (known from loop ${old.slug}, ${e.id} ${e.severity}, ${e.source === "breaker" ? "proven by the breaker" : `found by ${(e.reviewers ?? []).join(" + ")}`}) ${e.title} [${loc(e)}]${rule ? ` Rule the fix had to enforce: ${rule}.` : ""}${fixAt ? ` The last attempt fixed it at ${fixAt}.` : ""}${again ? ` A reviewer re-flagged that fix: ${again}.` : ""} Status when the loop stopped: ${e.status}. This loop tests it from the start.${detail(e.body, "What was found")}${detail(e.recommendation, "Recommended")}`;
   });
   const header = [
     `<!-- crossfire respec: drafted from loop "${old.slug}" (${old.terminal?.kind ?? old.phase}${old.terminal?.gate ? ` at ${old.terminal.gate}` : ""}). Review and simplify it with the person who owns the change before crossfire init. -->`,

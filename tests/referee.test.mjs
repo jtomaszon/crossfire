@@ -410,9 +410,9 @@ test("no start-over suggestion for one isolated finding", () => {
   assert.doesNotMatch(renderReport(s, { minutesElapsed: 2 }), /Consider starting over/);
 });
 
-test("G6 names a long idle wait so a stalled agent is not mistaken for slow work", () => {
+test("G6 names how long finished results sat unrecorded, not how long the work took", () => {
   const s = fresh({ maxMinutes: 10 });
-  s.history.push({ at: "2026-10-09T00:00:00.000Z", event: "send-builder:fix" });
-  assert.match(idleNote(s, "2026-10-09T05:00:00.000Z"), /longest wait between steps was 300 min, before now/);
-  assert.equal(idleNote(s, "2026-10-09T00:10:00.000Z"), "");
+  assert.equal(idleNote(s), "", "no recorded waits: nothing to say");
+  s.history.push({ at, event: "result-unrecorded", detail: "x", minutes: 240, file: "a" }, { at, event: "result-unrecorded", detail: "y", minutes: 30, file: "b" });
+  assert.match(idleNote(s), /finished results waited 270 min in all before anyone recorded them, 240 min at most/);
 });
