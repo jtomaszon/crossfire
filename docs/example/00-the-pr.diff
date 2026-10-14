@@ -1,0 +1,31 @@
+diff --git a/src/serve.mjs b/src/serve.mjs
+index 19164f9..504e3f5 100644
+--- a/src/serve.mjs
++++ b/src/serve.mjs
+@@ -1,2 +1,10 @@
+ // A tiny static file server's path handling.
++import path from "node:path";
++
+ export const PUBLIC_DIR = "public";
++
++/** The absolute path of the file to serve for an HTTP request path. */
++export function resolvePublic(root, requestPath) {
++  const decoded = decodeURIComponent(requestPath);
++  return path.join(root, PUBLIC_DIR, decoded);
++}
+diff --git a/test/serve.test.mjs b/test/serve.test.mjs
+index e558d33..e8ed1cb 100644
+--- a/test/serve.test.mjs
++++ b/test/serve.test.mjs
+@@ -5,3 +5,11 @@ import { PUBLIC_DIR } from "../src/serve.mjs";
+ test("public dir is configured", () => {
+   assert.equal(PUBLIC_DIR, "public");
+ });
++
++import path from "node:path";
++import { resolvePublic } from "../src/serve.mjs";
++
++test("serves index.html from public/", () => {
++  const root = path.resolve("/srv/site");
++  assert.equal(resolvePublic(root, "/index.html"), path.join(root, "public", "index.html"));
++});
