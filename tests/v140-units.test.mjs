@@ -406,7 +406,7 @@ test("R4 hardening: rebinding an assertion API or taking a skip API by reference
   const alias = weakened(APP, `${APP}const later = test${k(".", "skip")};\nlater('b', () => {});\n`);
   assert.equal(alias.length, 1, JSON.stringify(alias));
   assert.match(alias[0], /adds a skip or focus call/);
-  assert.ok(skipCallIn(k("const x = describe", ".only;")), "focus by reference");
+  assert.ok(skipCallIn(k("const x = describe", ".", "only;")), "focus by reference");
   assert.ok(!skipCallIn("const opts = { skip: true };"), "a skip option is still not a call");
 });
 
