@@ -79,7 +79,9 @@ test("AC-9: what counts as a test file", () => {
 });
 
 test("AC-9: skip and focus calls are found; a { skip: condition } option is not", () => {
-  for (const line of [`test${SKIP}"x", () => {})`, `describe${ONLY}"x", () => {})`, "  xit('x', () => {})", "xdescribe('x')", "@pytest.mark.skip(reason='x')", "@pytest.mark.skipif(True)", "@unittest.skip('x')", "  @Disabled", "\tt.Skip(\"later\")"]) assert.ok(skipCallIn(line), line);
+  // Assembled from parts: written out, these lines would trip the guard on this repository's own tests.
+  const k = (...parts) => parts.join("");
+  for (const line of [`test${SKIP}"x", () => {})`, `describe${ONLY}"x", () => {})`, k("  x", "it('x', () => {})"), k("x", "describe('x')"), k("@pytest.mark.", "skip(reason='x')"), k("@pytest", ".mark.skipif(True)"), k("@unittest.", "skip('x')"), k("  @Dis", "abled"), k("\tt", ".Skip(\"later\")")]) assert.ok(skipCallIn(line), line);
   for (const line of ['test("x", { skip: process.platform !== "linux" }, () => {})', "process.exit(1)", "const skipped = 0;", "it('x', () => {})"]) assert.ok(!skipCallIn(line), line);
 });
 
