@@ -42,7 +42,7 @@ export function severityOf(reviewerSeverity) {
   }
 }
 
-export function newState({ slug, repo, spec, base, baseSha, e2e = [], invariants = [], maxRounds = 5, maxMinutes = 45, grok = "auto", breaker = true, startedAt }) {
+export function newState({ slug, repo, spec, base, baseSha, e2e = [], invariants = [], maxRounds = 3, maxMinutes = 45, grok = "auto", breaker = true, startedAt }) {
   return {
     version: 1,
     slug,
@@ -138,7 +138,16 @@ export function noteMalformed(state, key, reason, at) {
 
 /** G6 is checked only before a new builder or breaker leg starts: a finished leg always gets its review. */
 function budgetSpent(state, at) {
-  return escalate(state, at, "G6", `wall-clock budget of ${state.maxMinutes} min spent; no new builder leg started`);
+  return escalate(state, at, "G6", `wall-clock budget of ${state.maxMinutes} min spent; no new builder leg started${idleNote(state)}`);
+}
+
+/** Time a finished builder or breaker result sat unrecorded: a stall, not slow work. */
+export function idleNote(state) {
+  const waits = (state.history ?? []).filter((h) => h.event === "result-unrecorded" && Number.isFinite(h.minutes));
+  if (!waits.length) return "";
+  const total = waits.reduce((n, h) => n + h.minutes, 0);
+  const worst = waits.reduce((a, b) => (b.minutes > a.minutes ? b : a));
+  return ` (finished results waited ${total} min in all before anyone recorded them, ${worst.minutes} min at most: check that agents are not stalled)`;
 }
 
 function overBudget(state, minutesElapsed) {

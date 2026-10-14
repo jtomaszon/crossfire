@@ -47,6 +47,29 @@ export function renderCheckReport(check) {
   return `${out.join("\n")}\n`;
 }
 
+/**
+ * Signs that patching is not converging and a rewritten spec may be cheaper: findings that
+ * cluster on one file across passes, fixes re-flagged, new blockers late, or the round cap.
+ */
+export function respecSignals(state) {
+  const signals = [];
+  const byFile = new Map();
+  for (const e of state.ledger ?? []) {
+    if (!e.file || e.severity === "NIT") continue;
+    const v = byFile.get(e.file) ?? { n: 0, passes: new Set() };
+    v.n += 1;
+    v.passes.add(e.raisedPass ?? 0);
+    byFile.set(e.file, v);
+  }
+  for (const [file, v] of byFile) if (v.n >= 3 && v.passes.size >= 2) signals.push(`${v.n} findings in ${v.passes.size} review passes on ${file}`);
+  const reflagged = (state.ledger ?? []).filter((e) => e.reflaggedPass != null || (e.history ?? []).some((h) => h.reflagged)).map((e) => e.id);
+  if (reflagged.length) signals.push(`fixes re-flagged by a reviewer: ${reflagged.join(", ")}`);
+  const gate = state.terminal?.gate;
+  if (gate === "G5") signals.push("a new blocker appeared after the first fixes (G5)");
+  if (gate === "G2") signals.push(`findings still open after ${state.round} builder rounds (G2)`);
+  return signals;
+}
+
 /** Breaker legs as they happened: completed, skipped (malformed twice, or the time budget) or failed. */
 export function breakerTally(state) {
   const events = state.history ?? [];
@@ -106,6 +129,7 @@ export function renderReport(state, { minutesElapsed, changedFiles = [], head = 
   if (accepted.length) out.push("", `Accepted nits (G7, not re-reviewed): ${accepted.map((e) => e.id).join(", ")}`);
   if (!shipped) {
     const ids = (list) => list.map((e) => `${e.id} (${e.severity})`).join(", ");
+    const signals = respecSignals(state);
     const open = [...openAboveNit(state), ...openNits(state)];
     // Re-flagged in this pass, whatever the status (a closed finding a reviewer re-opened is open again).
     const reflagged = state.ledger.filter((e) => e.reflaggedPass != null && e.reflaggedPass === state.reviewPass && e.reflaggedPass > (e.answeredPass ?? e.claimedPass ?? -1));
@@ -128,8 +152,10 @@ export function renderReport(state, { minutesElapsed, changedFiles = [], head = 
         const h = [...e.history].reverse().find((x) => x.reflagged);
         return h ? [`  - ${e.id} re-flagged as: ${h.reflagged}${h.body ? `: ${h.body.split("\n")[0].slice(0, 300)}` : ""}`] : [];
       }),
-      "- Options: accept as is, give the builder a direction and start a new loop on top of this branch, or drop the change. The person who asked for the change decides, not an agent running the loop.",
-      "- Only if the person said to run unattended may an agent decide, and then: any further code goes through a new crossfire loop; at most one new loop per escalation, and if it escalates too, stop and wait; never push, merge or open a PR for this branch while a BLOCKER or CHANGES finding above is open, re-flagged, disputed, or claimed fixed and not re-reviewed.",
+      ...(signals.length ? [`- Consider starting over: ${signals.join("; ")}. \`crossfire respec --from-loop ${state.slug} --slug <new-slug>\` drafts a new spec from this one with every finding above as a known failure mode; after the person approves it, the new loop starts from \`${state.base}\`, not from this branch.`] : []),
+      `- Options: accept as is, give the builder a direction and start a new loop on top of this branch, start over from a rewritten spec (\`crossfire respec\`), or drop the change. The person who asked for the change decides, not an agent running the loop.`,
+      "- At most one new loop per escalation (a fix loop or a respec); if it escalates too, stop and wait for the person. Any further code goes through a crossfire loop.",
+      "- Only if the person said to run unattended may an agent choose among these, and then it never pushes, merges or opens a PR for this branch while a BLOCKER or CHANGES finding above is open, re-flagged, disputed, or claimed fixed and not re-reviewed.",
     );
   }
   if (changedFiles.length) out.push("", "## Files changed", ...changedFiles.map((f) => `- ${f}`));

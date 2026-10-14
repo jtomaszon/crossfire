@@ -378,6 +378,41 @@ test("the escalation report carries the unattended limits", () => {
   noteMalformed(s, "build", "x", at);
   noteMalformed(s, "build", "x", at);
   const report = renderReport(s, { minutesElapsed: 2 });
-  assert.match(report, /at most one new loop per escalation, and if it escalates too, stop and wait/);
-  assert.match(report, /never push, merge or open a PR for this branch while a BLOCKER or CHANGES finding/);
+  assert.match(report, /At most one new loop per escalation \(a fix loop or a respec\); if it escalates too, stop and wait/);
+  assert.match(report, /never pushes, merges or opens a PR for this branch while a BLOCKER or CHANGES finding/);
+});
+
+import { respecSignals } from "../plugins/crossfire/scripts/lib/report.mjs";
+import { idleNote } from "../plugins/crossfire/scripts/lib/referee.mjs";
+
+test("start-over signals: findings clustering on one file across passes, or a re-flagged fix", () => {
+  const s = fresh({ maxRounds: 5 });
+  afterBuild(s, done(), green, t);
+  afterReview(s, [codex([f("BLOCKER", "stale read", "cache.js", 10), f("CHANGES", "order", "cache.js", 40)])], t);
+  afterBuild(s, done([{ id: "F1", status: "FIXED", where: "cache.js:10" }, { id: "F2", status: "FIXED", where: "cache.js:40" }]), green, t);
+  const next = afterReview(s, [codex([f("BLOCKER", "eviction race", "cache.js", 90)])], t);
+  assert.equal(next.gate, "G5");
+  const signals = respecSignals(s);
+  assert.ok(signals.some((x) => /3 findings in 2 review passes on cache\.js/.test(x)), signals.join(" | "));
+  assert.ok(signals.some((x) => /G5/.test(x)));
+  const report = renderReport(s, { minutesElapsed: 9 });
+  assert.match(report, /Consider starting over: .*crossfire respec --from-loop x --slug <new-slug>/);
+  assert.match(report, /the new loop starts from `main`, not from this branch/);
+});
+
+test("no start-over suggestion for one isolated finding", () => {
+  const s = fresh();
+  afterBuild(s, done(), green, t);
+  afterReview(s, [codex([f("BLOCKER", "hole")])], t);
+  noteMalformed(s, "build", "x", at);
+  noteMalformed(s, "build", "x", at);
+  assert.deepEqual(respecSignals(s), []);
+  assert.doesNotMatch(renderReport(s, { minutesElapsed: 2 }), /Consider starting over/);
+});
+
+test("G6 names how long finished results sat unrecorded, not how long the work took", () => {
+  const s = fresh({ maxMinutes: 10 });
+  assert.equal(idleNote(s), "", "no recorded waits: nothing to say");
+  s.history.push({ at, event: "result-unrecorded", detail: "x", minutes: 240, file: "a" }, { at, event: "result-unrecorded", detail: "y", minutes: 30, file: "b" });
+  assert.match(idleNote(s), /finished results waited 270 min in all before anyone recorded them, 240 min at most/);
 });

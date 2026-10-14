@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.3.0
+
+From running many loops in parallel.
+
+- **Loops inside subagents no longer wait forever.** The loop skill dispatches builders and breakers with an explicit `run_in_background: false` (the Agent tool defaults to the background, and a background agent's completion notice can go to someone else), never resumes a builder with SendMessage, and runs reviews in the background with their output in a fresh file per review (`mktemp`) that it then waits for in the foreground (a timeout repeats only the wait, never the review), instead of ending its turn to wait for a notification. The review skill does the same for `crossfire check`.
+- **`STALLED` in `crossfire status`:** when a builder or breaker wrote its result and nobody ran `built` or `attacked`, `status` (one loop, or every loop in the repository) says so, with how long ago and the command to run.
+- **`crossfire respec --from-loop <slug> --slug <new-slug>`: start over from a rewritten spec.** It drafts a new spec from a finished loop's spec, with every finding (and the breaker's proven attacks) as a known failure mode the new loop must test from the start, each with its full evidence (the scenario, failing test or reviewer's text, and what defeated the last fix when a reviewer re-flagged it), plus a "Starting over" section: start from the base, not the old branch, and simplify where the failures cluster. It writes only the draft; no branch, loop or commit. Escalation reports say "Consider starting over" with the evidence when findings cluster in one file across passes, a fix is re-flagged, a new blocker appears after the first fixes (G5) or the round cap is hit (G2).
+- **At most one new loop per escalation, always** (a fix loop or a respec); if it escalates too, stop and wait for the person. This was the unattended-only rule.
+- **`--max-rounds` defaults to 3** (was 5): most loops finish within two review passes, and the ones that do not are usually better started over.
+- **`init` says a loop needs 2 concurrent agents**, and warns when there are more than 6 proof commands or their first run takes over 5 minutes, since they run every round. The spec template asks what each proof command proves.
+- **G6 (time budget) says how long finished results sat unrecorded**: `built` and `attacked` log when a builder or breaker result waited 5 minutes or more before anyone recorded it, so a stalled agent is not mistaken for slow work.
+- README: "Before running many loops" (agents, merging, proof commands, liveness, starting over); the loop skill has the same as "Running several loops at once".
+
 ## 1.2.1
 
 - **`crossfire ladder` reads CI for the commit itself**, not for the PR number: the check runs and commit statuses of the PR head it validated (`gh api repos/.../commits/<sha>/check-runs` and `/status`). CI can no longer be attributed to a different head, and if the PR moves while the ladder reads it, the CI line says so. This removes the known issue listed in 1.2.0. CI is reported only when the PR, read back, still has that head (otherwise unknown, and `--json` gives `headNow`); a list shorter than GitHub's own count, or an outcome crossfire does not know, is unknown rather than a tally; required checks that have not reported yet (and check runs GitHub has queued but not created) count as pending; a PR with 100 or more checks, or a check status crossfire does not know, is unknown. If the PR's head moves while the ladder reads it (checked before and after reading CI), the PR line says so and nothing read for the old head is reported as current. A rerun queued over a finished check of the same name is pending, and check runs and commit statuses that share a name are kept apart.
