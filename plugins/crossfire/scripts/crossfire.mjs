@@ -850,14 +850,14 @@ export function renderRespec(old, specText) {
   const detail = (text, label) => {
     const t = String(text ?? "").trim();
     if (!t) return "";
-    const clipped = t.length > 1500 ? `${t.slice(0, 1500)}... (full text: crossfire report --slug ${old.slug})` : t;
-    return `\n  > ${label}: ${clipped.replace(/\n+/g, "\n  > ")}`;
+    return `\n  > ${label}: ${t.replace(/\n+/g, "\n  > ")}`;
   };
   const known = (old.ledger ?? []).filter((e) => e.severity !== "NIT").map((e) => {
     const rule = [...(e.history ?? [])].reverse().find((h) => h.rule)?.rule;
     const fixAt = [...(e.history ?? [])].reverse().find((h) => h.builder && h.where)?.where;
-    const again = [...(e.history ?? [])].reverse().find((h) => h.reflagged)?.reflagged;
-    return `- (known from loop ${old.slug}, ${e.id} ${e.severity}, ${e.source === "breaker" ? "proven by the breaker" : `found by ${(e.reviewers ?? []).join(" + ")}`}) ${e.title} [${loc(e)}]${rule ? ` Rule the fix had to enforce: ${rule}.` : ""}${fixAt ? ` The last attempt fixed it at ${fixAt}.` : ""}${again ? ` A reviewer re-flagged that fix: ${again}.` : ""} Status when the loop stopped: ${e.status}. This loop tests it from the start.${detail(e.body, "What was found")}${detail(e.recommendation, "Recommended")}`;
+    const reflag = [...(e.history ?? [])].reverse().find((h) => h.reflagged);
+    const again = reflag?.reflagged;
+    return `- (known from loop ${old.slug}, ${e.id} ${e.severity}, ${e.source === "breaker" ? "proven by the breaker" : `found by ${(e.reviewers ?? []).join(" + ")}`}) ${e.title} [${loc(e)}]${rule ? ` Rule the fix had to enforce: ${rule}.` : ""}${fixAt ? ` The last attempt fixed it at ${fixAt}.` : ""}${again ? ` A reviewer re-flagged that fix: ${again}.` : ""} Status when the loop stopped: ${e.status}. This loop tests it from the start.${detail(e.body, "What was found")}${detail(e.recommendation, "Recommended")}${reflag ? detail(`${reflag.where ? `at ${reflag.where}: ` : ""}${reflag.body ?? ""}`, "What defeated the last fix") : ""}`;
   });
   const header = [
     `<!-- crossfire respec: drafted from loop "${old.slug}" (${old.terminal?.kind ?? old.phase}${old.terminal?.gate ? ` at ${old.terminal.gate}` : ""}). Review and simplify it with the person who owns the change before crossfire init. -->`,

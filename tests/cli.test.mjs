@@ -1367,4 +1367,8 @@ test("respec keeps each finding's evidence, quoted so it is not counted as extra
   assert.match(draft, /> What was found: Scenario: nested rollback/);
   assert.match(draft, /> Failing test: t1/);
   assert.equal(countFailureModes(draft), 4, "three original plus one known");
+  const long = "x".repeat(4000);
+  const again = renderRespec({ ...old, ledger: [{ ...old.ledger[0], body: long, history: [{ builder: "FIXED", where: "x.js:4" }, { reflagged: "[B1] still loses it", body: "Retry path skips the guard", where: "x.js:9" }] }] }, spec);
+  assert.ok(again.includes(long), "long evidence is kept whole");
+  assert.match(again, /> What defeated the last fix: at x\.js:9: Retry path skips the guard/);
 });
