@@ -133,7 +133,7 @@ The check counts as the loop's first review pass.
 |---|---|
 | SPEC | the builder returned `SPEC_MISMATCH`: the spec cannot be built as written. No proof command runs; the report carries its handoff (severity, summary, what it tried, the situation, its synthesis) and suggests a revised spec (`crossfire respec`) |
 | G0 proof | the spec's E2E and invariant commands fail (the builder gets the output and tries again; review only starts on green) |
-| G1 malformed | the builder's result or the Codex review is malformed twice in a row; a round that weakens tests (deletes a test file, removes a line from an existing one, adds a skip or focus call, or adds lines that stop existing ones from running, unless "Allowed test changes" in the spec as approved at init names the file) is malformed |
+| G1 malformed | the builder's result or the Codex review is malformed twice in a row; a round that weakens tests is malformed: existing test files are not changed unless the spec allows it; add new tests in new files (a file the "Allowed test changes" of the spec as approved at init names may change; renames with no content change pass; a new test file may not call a skip or focus API) |
 | G2 round cap | findings are still open after `--max-rounds` builder legs crossfire ran (default 2 with a current spec review, 3 without; with `--from-check`, the pull request's own code is not one) |
 | G3 convergence | a reviewer re-flags a finding the builder said it fixed, or the builder disputes a non-nit |
 | G4 suspect | a new finding lands where a fix was just claimed |

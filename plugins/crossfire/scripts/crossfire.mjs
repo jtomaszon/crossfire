@@ -698,7 +698,7 @@ function built(ctx, opts) {
         } catch (e) {
           problems = [e.message];
         }
-        if (!problems.length) problems = testChanges(state.repo, state.baseSha, specText).problems.map((p) => `weakens tests: ${p} (existing test files may only grow; a file the "## Allowed test changes" section of the spec as approved at init names is exempt)`);
+        if (!problems.length) problems = testChanges(state.repo, state.baseSha, specText).problems.map((p) => `weakens tests: ${p} (existing test files are not changed unless the spec allows it; add new tests in new files; a file the "## Allowed test changes" section of the spec as approved at init names is exempt)`);
       }
     }
     if (problems.length) {

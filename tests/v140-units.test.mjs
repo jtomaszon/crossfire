@@ -73,9 +73,9 @@ test("FM-3: 3 failures older than 7 days do not skip; 2 failures do not skip; on
 
 // ---- R4: tests are not weakened -------------------------------------------------
 
-test("AC-9: what counts as a test file", () => {
-  for (const p of ["tests/a.mjs", "test/x.rb", "spec/models/user_spec.rb", "src/__tests__/a.js", "pkg/a_test.go", "src/a.test.ts", "src/a.spec.js", "lib/a_spec.rb", "deep/tests/fixtures/f.json"]) assert.ok(isTestFile(p), p);
-  for (const p of ["src/app.mjs", "testing/a.js", "docs/spec.md", "latest/a.js", "contest.js", "tests"]) assert.ok(!isTestFile(p), p);
+test("AC-9: a test file is known by its name only; helpers and fixtures are not test files", () => {
+  for (const p of ["spec/models/user_spec.rb", "src/__tests__/a.js", "pkg/a_test.go", "src/a.test.ts", "src/a.spec.js", "lib/a_spec.rb", "tests/test_app.py", "test_x.py", "a.test.ts.snap"]) assert.ok(isTestFile(p), p);
+  for (const p of ["src/app.mjs", "tests/a.mjs", "tests/helpers.mjs", "tests/fixtures/fake.mjs", "deep/tests/fixtures/f.json", "test/x.rb", "testing/a.js", "docs/spec.md", "latest/a.js", "contest.js", "tests", "test_x.rb", "__tests__"]) assert.ok(!isTestFile(p), p);
 });
 
 test("AC-9: skip and focus calls are found; a { skip: condition } option is not", () => {
@@ -107,21 +107,20 @@ test("FM-4: a deleted test file and a removed assertion are flagged with file an
   assert.deepEqual(res.problems, ["tests/app.test.mjs: deletes a test file"]);
 });
 
-test("FM-4: a new skip or focus call in a test file is flagged, in new test files too", (t) => {
+test("FM-4: a new skip or focus call is flagged: as a change in an existing test file, and in a new test file", (t) => {
   const r = gitRepo();
   t.after(() => r.cleanup());
   r.write("tests/app.test.mjs", `test('a', () => {\n  assert.equal(1, 1);\n  assert.equal(2, 2);\n});\ntest${SKIP}'b', () => {});\n`);
   r.write("tests/new.test.mjs", `describe${ONLY}'n', () => {});\n`);
   r.commit();
   const res = testChanges(r.dir, r.base, "");
-  assert.deepEqual(res.problems.sort(), [`tests/app.test.mjs:5: adds a skip or focus call: "test${SKIP}'b', () => {});"`, `tests/new.test.mjs:1: adds a skip or focus call: "describe${ONLY}'n', () => {});"`].sort());
+  assert.deepEqual(res.problems.sort(), [`tests/app.test.mjs:5: adds a line to an existing test file: "test${SKIP}'b', () => {});"`, `tests/new.test.mjs:1: adds a skip or focus call: "describe${ONLY}'n', () => {});"`].sort());
 });
 
-test("FM-4: a rename with no removed lines, a non-test file, a { skip: condition } option and a new test file all pass", (t) => {
+test("FM-4: a rename with no content change, a non-test file, a { skip: condition } option and a new test file all pass", (t) => {
   const r = gitRepo();
   t.after(() => r.cleanup());
   r.g("mv", "tests/app.test.mjs", "tests/renamed.test.mjs");
-  fs.appendFileSync(path.join(r.dir, "tests/renamed.test.mjs"), "test('c', () => {});\n");
   r.write("src/app.mjs", "export const a = 3;\n");
   r.write("tests/linux.test.mjs", 'test("x", { skip: process.platform !== "linux" }, () => {});\n');
   r.commit();
@@ -129,12 +128,12 @@ test("FM-4: a rename with no removed lines, a non-test file, a { skip: condition
   assert.deepEqual(res.problems, []);
 });
 
-test("FM-4: a test file renamed out of the test paths counts as deleted; a renamed file with a removed line is flagged", (t) => {
+test("FM-4: a test file renamed to a name that is not a test file counts as deleted; a renamed file with a removed line is flagged", (t) => {
   const r = gitRepo();
   t.after(() => r.cleanup());
   r.g("mv", "tests/app.test.mjs", "src/app-check.mjs");
   r.commit();
-  assert.deepEqual(testChanges(r.dir, r.base, "").problems, ["tests/app.test.mjs -> src/app-check.mjs: moves a test file out of the test paths"]);
+  assert.deepEqual(testChanges(r.dir, r.base, "").problems, ["tests/app.test.mjs -> src/app-check.mjs: renames a test file to a name that is not a test file"]);
   const r2 = gitRepo();
   t.after(() => r2.cleanup());
   r2.g("mv", "tests/big.test.mjs", "tests/moved.test.mjs");
@@ -351,20 +350,18 @@ test("AC-15: diff size counts changed lines and files, lockfiles excluded", (t) 
   assert.deepEqual(size, { lines: 300, files: 1 });
 });
 
-// ---- R4 hardening: weakening a test with added lines only -----------------------------
-// Rule: an existing test file may only grow, and what it grows by may not change whether its
-// existing lines run. Added lines must be self-contained (they may not open or close a comment,
-// string or block that existing lines fall inside), may not end control flow before existing
-// lines, may not rebind an assertion API, and may not take a skip or focus API by reference.
+// ---- R4: an existing test file is not changed --------------------------------------------
+// Rule: a builder cannot weaken an existing test: existing test files are unchanged unless the
+// approved spec allows it, and new tests go in new files.
 
-function weakened(base, branch, file = "tests/app.test.mjs") {
+function changed(base, branch, file = "tests/app.test.mjs", spec = "") {
   const r = gitRepo();
   r.write(file, base);
   r.commit();
   const base2 = r.g("rev-parse", "HEAD");
   r.write(file, branch);
   r.commit();
-  const res = testChanges(r.dir, base2, "");
+  const res = testChanges(r.dir, base2, spec);
   r.cleanup();
   return res.problems;
 }
@@ -372,55 +369,61 @@ function weakened(base, branch, file = "tests/app.test.mjs") {
 const APP = "test('a', () => {\n  assert.equal(compute(), 42);\n});\n";
 
 test("breaker: commenting out an existing assertion with added lines only is a weakened test", () => {
-  const p = weakened(APP, "test('a', () => {\n  /*\n  assert.equal(compute(), 42);\n  */\n});\n");
-  assert.ok(p.length > 0, "the assertion was disabled, but the guard reported nothing");
-  assert.match(p[0], /^tests\/app\.test\.mjs:3: added lines put an existing line inside a comment, string or block it was not in: "  assert\.equal\(compute\(\), 42\);"/);
+  const p = changed(APP, "test('a', () => {\n  /*\n  assert.equal(compute(), 42);\n  */\n});\n");
+  assert.deepEqual(p, ['tests/app.test.mjs:2: adds a line to an existing test file: "  /*"', 'tests/app.test.mjs:4: adds a line to an existing test file: "  */"']);
 });
 
-test("R4 hardening: wrapping existing assertions in a block that never runs, with added lines only, is flagged", () => {
-  assert.ok(weakened(APP, "test('a', () => {\n  if (false) {\n  assert.equal(compute(), 42);\n  }\n});\n").length > 0, "if (false) { ... }");
-  assert.ok(weakened(APP, "test('a', () => {\n  function never() {\n  assert.equal(compute(), 42);\n  }\n});\n").length > 0, "a function nobody calls");
-  assert.ok(weakened(APP, "test('a', () => {\n  const s = `\n  assert.equal(compute(), 42);\n  `;\n});\n").length > 0, "a template string");
-  const py = "def test_a():\n    assert compute() == 42\n";
-  assert.ok(weakened(py, 'def test_a():\n    """\n    assert compute() == 42\n    """\n', "tests/test_app.py").length > 0, "a Python docstring");
-  const rb = "it 'a' do\n  expect(compute).to eq(42)\nend\n";
-  assert.ok(weakened(rb, "it 'a' do\n=begin\n  expect(compute).to eq(42)\n=end\nend\n", "spec/app_spec.rb").length > 0, "a Ruby =begin block");
-  assert.ok(weakened(rb, "it 'a' do\n  _ = <<~OFF\n  expect(compute).to eq(42)\n  OFF\nend\n", "spec/app_spec.rb").length > 0, "a Ruby heredoc");
+test("R4: removing an assertion from an existing test file is refused, with file and line", () => {
+  const p = changed(APP, "test('a', () => {\n});\n");
+  assert.deepEqual(p, ['tests/app.test.mjs:2: removes a line from an existing test file: "  assert.equal(compute(), 42);"']);
 });
 
-test("R4 hardening: an early return or throw added before existing assertions is flagged", () => {
-  const p = weakened(APP, "test('a', () => {\n  return;\n  assert.equal(compute(), 42);\n});\n");
-  assert.equal(p.length, 1, JSON.stringify(p));
-  assert.match(p[0], /^tests\/app\.test\.mjs:2: adds an exit before existing test code: "  return;"/);
-  assert.equal(weakened(APP, "test('a', () => {\n  if (true) return;\n  assert.equal(compute(), 42);\n});\n").length, 1, "a constant condition is no condition");
-  const py = "def test_a():\n    x = compute()\n    assert x == 42\n";
-  assert.equal(weakened(py, "def test_a():\n    x = compute()\n    return\n    assert x == 42\n", "tests/test_app.py").length, 1, "Python");
-  assert.equal(weakened("it 'a' do\n  x = compute\n  expect(x).to eq(42)\nend\n", "it 'a' do\n  x = compute\n  next\n  expect(x).to eq(42)\nend\n", "spec/app_spec.rb").length, 1, "Ruby next out of the block");
+test("R4: editing an assertion in an existing test file is refused", () => {
+  const p = changed(APP, "test('a', () => {\n  assert.ok(compute());\n});\n");
+  assert.deepEqual(p, ['tests/app.test.mjs:2: removes a line from an existing test file: "  assert.equal(compute(), 42);"', 'tests/app.test.mjs:2: adds a line to an existing test file: "  assert.ok(compute());"']);
 });
 
-test("R4 hardening: rebinding an assertion API or taking a skip API by reference is flagged", () => {
-  const k = (...parts) => parts.join("");
-  assert.equal(weakened(APP, `assert.equal = () => {};\n${APP}`).length, 1, "assert.equal reassigned");
-  assert.equal(weakened(APP, `Object.assign(assert, { equal() {} });\n${APP}`).length, 1, "assert patched");
-  assert.equal(weakened("import unittest\nclass T(unittest.TestCase):\n    def test_a(self):\n        self.assertEqual(1, 1)\n", "import unittest\nclass T(unittest.TestCase):\n    def setUp(self):\n        self.assertEqual = lambda *a: None\n    def test_a(self):\n        self.assertEqual(1, 1)\n", "tests/test_app.py").length, 1, "unittest assert method replaced");
-  const alias = weakened(APP, `${APP}const later = test${k(".", "skip")};\nlater('b', () => {});\n`);
-  assert.equal(alias.length, 1, JSON.stringify(alias));
-  assert.match(alias[0], /adds a skip or focus call/);
-  assert.ok(skipCallIn(k("const x = describe", ".", "only;")), "focus by reference");
-  assert.ok(!skipCallIn("const opts = { skip: true };"), "a skip option is still not a call");
+test("R4: any added line in an existing test file is refused: an early return, a rebound assertion, even a new test", () => {
+  assert.equal(changed(APP, "test('a', () => {\n  return;\n  assert.equal(compute(), 42);\n});\n").length, 1, "an early return");
+  assert.equal(changed(APP, `assert.equal = () => {};\n${APP}`).length, 1, "assert.equal reassigned");
+  assert.equal(changed(APP, `${APP}test('b', () => {\n  assert.ok(true);\n});\n`).length, 3, "a new test goes in a new file");
+  assert.equal(changed("def test_a():\n    assert compute() == 42\n", 'def test_a():\n    """\n    assert compute() == 42\n    """\n', "tests/test_app.py").length, 2, "a Python docstring");
+  assert.equal(changed("it 'a' do\n  expect(compute).to eq(42)\nend\n", "it 'a' do\n=begin\n  expect(compute).to eq(42)\n=end\nend\n", "spec/app_spec.rb").length, 2, "a Ruby =begin block");
 });
 
-test("R4 hardening: legitimate growth of an existing test file passes", () => {
-  const base = "describe('d', () => {\n  it('a', () => {\n    assert.equal(1, 1);\n  });\n});\n";
-  const grown = "describe('d', () => {\n  it('a', () => {\n    assert.equal(1, 1);\n  });\n\n  it('b', () => {\n    assert.equal(2, 2);\n  });\n});\n";
-  assert.deepEqual(weakened(base, grown), [], "a new test inside the describe, wherever git places the hunk");
-  const helper = "function load(x) {\n  const v = read(x);\n  return v;\n}\n";
-  assert.deepEqual(weakened(helper, "function load(x) {\n  if (!x) throw new Error('no input');\n  const v = read(x);\n  return v;\n}\n", "tests/helpers.mjs"), [], "a guard clause");
-  assert.deepEqual(weakened("function f() {\n  work();\n}\n", "function f() {\n  work();\n  return 1;\n}\n", "tests/helpers.mjs"), [], "a return at the end of a function");
-  assert.deepEqual(weakened(APP, `/**\n * The answer.\n */\n${APP}// it's done\n`), [], "a complete doc comment and a line comment");
-  assert.deepEqual(weakened("def test_a():\n    assert 1 == 1\n", "def test_a():\n    assert 1 == 1\n\ndef helper():\n    return 2\n\ndef test_b():\n    assert helper() == 2\n", "tests/test_app.py"), [], "a new Python function with a return");
-  const rb = "describe 'x' do\n  it 'a' do\n    expect(1).to eq(1)\n  end\nend\n";
-  assert.deepEqual(weakened(rb, "describe 'x' do\n  it 'a' do\n    expect(1).to eq(1)\n  end\n\n  it 'b' do\n    expect(url).to match(%r{/#{name}(-[a-f0-9]+)?\\.js})\n    expect(body).to include(\"#{h(\"# x\")}\")\n    text = <<~TXT\n      it's (open\n    TXT\n    expect(text).to be_present\n  end\nend\n", "spec/x_spec.rb"), [], "Ruby with a regexp, interpolation and a heredoc");
-  assert.deepEqual(weakened('{"a": 1}\n', '{"a": 1}\n(an unbalanced note\n', "tests/fixtures/data.txt"), [], "fixture data is not parsed as code");
-  assert.deepEqual(weakened(APP, `${APP}test('b', () => {\n  const s = \`multi\nline\`;\n  assert.ok(s);\n});\n`), [], "a complete template string");
+test("R4: a change with no line diff (only whitespace at the end, or binary) is still refused", () => {
+  const p = changed(APP, APP.replace(/\n$/, ""));
+  assert.ok(p.length > 0, JSON.stringify(p));
+  const bin = changed("\u0000\u0001base", "\u0000\u0001weakened", "tests/data.test.bin");
+  assert.deepEqual(bin, ["tests/data.test.bin: changes an existing test file"]);
+});
+
+test("R4: the approved spec's Allowed test changes lets a named existing file change; another file stays refused", () => {
+  const allow = "# S\n\n## Allowed test changes\n\n- `tests/app.test.mjs`: the old check is replaced\n";
+  assert.deepEqual(changed(APP, "test('a', () => {\n});\n", "tests/app.test.mjs", allow), []);
+  assert.equal(changed(APP, "test('a', () => {\n});\n", "tests/app.test.mjs", "# S\n\n## Allowed test changes\n\n- `tests/other.test.mjs`\n").length, 1);
+});
+
+test("R4: helpers and fixtures are not test files and may change; a new test file is free but may not skip or focus", (t) => {
+  assert.deepEqual(changed("export const load = 1;\n", "export const load = 2;\n", "tests/helpers.mjs"), [], "a helper");
+  assert.deepEqual(changed('{"a": 1}\n', '{"a": 2}\n', "tests/fixtures/data.json"), [], "a fixture");
+  const r = gitRepo();
+  t.after(() => r.cleanup());
+  r.write("tests/new.test.mjs", `test('n', () => {\n  assert.ok(true);\n});\nconst later = test${"." + "skip"};\n`);
+  r.write("tests/clean.test.mjs", "test('c', () => {\n  assert.ok(true);\n});\n");
+  r.commit();
+  const res = testChanges(r.dir, r.base, "");
+  assert.deepEqual(res.problems, [`tests/new.test.mjs:4: adds a skip or focus call: "const later = test${"." + "skip"};"`]);
+});
+
+test("R4: a file renamed from a non-test name to a test name is a new test file: its whole content is checked for skip calls", (t) => {
+  const r = gitRepo();
+  t.after(() => r.cleanup());
+  r.write("src/later.mjs", `${BIG}test${SKIP}'z', () => {});\n`);
+  r.commit();
+  const base2 = r.g("rev-parse", "HEAD");
+  r.g("mv", "src/later.mjs", "src/later.test.mjs");
+  r.commit();
+  const res = testChanges(r.dir, base2, "");
+  assert.deepEqual(res.problems, [`src/later.test.mjs:13: adds a skip or focus call: "test${SKIP}'z', () => {});"`]);
 });

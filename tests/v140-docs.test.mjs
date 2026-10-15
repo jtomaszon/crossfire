@@ -42,7 +42,6 @@ test("AC-17: the review skill, builder agent, README and CHANGELOG describe 1.4.
   const builder = read(`${PLUGIN}/agents/builder.md`);
   assert.match(builder, /SPEC_MISMATCH/);
   assert.match(builder, /handoff/);
-  assert.match(builder, /Existing test files may only grow/);
   const readme = read("README.md");
   assert.match(readme, /^## Prove the spec$/m);
   assert.match(readme, /crossfire spec-review/);
@@ -66,4 +65,13 @@ test("the version is 1.4.0 in package.json, plugin.json and the CLI", () => {
   assert.equal(JSON.parse(read(`${PLUGIN}/.claude-plugin/plugin.json`)).version, "1.4.0");
   const r = spawnSync(process.execPath, [CLI, "--version"], { encoding: "utf8" });
   assert.equal(r.stdout.trim(), "1.4.0");
+});
+
+test("R4: README, spec template, CHANGELOG, loop skill and builder agent state the test rule in one sentence", () => {
+  const rule = /existing test files are not changed unless the spec allows it; add new tests in new files/i;
+  for (const f of ["README.md", "CHANGELOG.md", `${PLUGIN}/skills/loop/references/spec-template.md`, `${PLUGIN}/skills/loop/SKILL.md`, `${PLUGIN}/agents/builder.md`]) {
+    const t = read(f);
+    assert.match(t, rule, f);
+    assert.doesNotMatch(t, /may only grow|stop existing ones from running/i, `${f} still describes the old rule`);
+  }
 });

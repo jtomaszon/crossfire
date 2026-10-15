@@ -60,7 +60,7 @@ The builder may add tests but never edits, weakens or deletes these.
 
 ## Allowed test changes (optional)
 
-Leave this section out unless an existing test must shrink. By default crossfire refuses a builder round that deletes a test file, removes any line from an existing test file, or adds a skip or focus call (`.skip(`, `.only(`, `xit(`, `@pytest.mark.skip`, ...). List each test file that may change here, with why; nothing else is exempt.
+Leave this section out unless an existing test file must change: existing test files are not changed unless the spec allows it; add new tests in new files. By default crossfire refuses a builder round that deletes, renames away or changes any line of a test file that exists on the base, or adds a skip or focus call (`.skip(`, `.only(`, `xit(`, `@pytest.mark.skip`, ...) in a new test file. A test file is known by its name: `*.test.*`, `*_test.*`, `*.spec.*`, `*_spec.*`, `test_*.py`, or under `__tests__/`; helpers and fixtures are not test files. List each existing test file that may change here, with why; nothing else is exempt.
 
 - `tests/old_feature.test.js`: the feature it tests is deleted (see What we're deleting).
 
