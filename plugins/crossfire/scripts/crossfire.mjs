@@ -434,9 +434,13 @@ function init(ctx, opts) {
     const snapshot = files.specSnapshot(dir);
     fs.writeFileSync(snapshot, specBytes);
     state.specSnapshot = { file: snapshot, sha256: sha256(specBytes) };
+    // The head the loop starts from: the test guard judges only the commits the loop's builder makes
+    // after it (a --from-check pull request's own commits are not the builder's). Kept in state and,
+    // beside the spec's sha256, outside the run directory.
+    state.startHead = git.head(repo);
     const anchor = specAnchorFile(repo, dir);
     fs.mkdirSync(path.dirname(anchor), { recursive: true });
-    fs.writeFileSync(anchor, `${state.specSnapshot.sha256}\n`);
+    fs.writeFileSync(anchor, `${state.specSnapshot.sha256}\n${state.startHead}\n`);
     // 1.4: the settings this loop decided, read from state from now on (a loop without policy is a 1.3 loop).
     state.policy = 2;
     state.decided = decided;
@@ -665,15 +669,32 @@ function specAnchorFile(repo, dir) {
   return path.join(git.gitCommonDir(repo), "crossfire", "approved-specs", `${sha256(path.resolve(dir)).slice(0, 32)}.sha256`);
 }
 
-/** The recorded sha256, or null when there is no record; an unreadable record throws (fail closed). */
-function readSpecAnchor(repo, dir) {
+/** The record's lines (sha256, start head), or null when there is no record; an unreadable record throws (fail closed). */
+function readAnchorLines(repo, dir) {
   const file = specAnchorFile(repo, dir);
   try {
-    return fs.readFileSync(file, "utf8").trim();
+    return fs.readFileSync(file, "utf8").trim().split("\n").map((l) => l.trim());
   } catch (e) {
     if (e.code === "ENOENT") return null;
     throw new CrossfireError(`could not read the record of the spec approved at init (${file}): ${e.message}`);
   }
+}
+
+/** The recorded sha256, or null when there is no record. */
+function readSpecAnchor(repo, dir) {
+  return readAnchorLines(repo, dir)?.[0] ?? null;
+}
+
+/**
+ * The commit a 1.4 loop started from: in state and in the record outside the run directory, and the
+ * two agree. Anything else throws (fail closed); it never falls back to the base.
+ */
+function loopStartHead(dir, state) {
+  const recorded = readAnchorLines(state.repo, dir)?.[1] ?? null;
+  if (!state.startHead || !recorded || state.startHead !== recorded || !/^[0-9a-f]{40,64}$/.test(recorded)) {
+    throw new CrossfireError(`weakens tests: the commit this loop started from is missing from its state or its record (${specAnchorFile(state.repo, dir)}), or the two differ; the test guard cannot tell the builder's commits from the branch's earlier ones. Start a new loop (crossfire init --force).`);
+  }
+  return recorded;
 }
 
 /** A 1.4 loop is bound to its approved spec: its anchor exists, or its state says it is a 1.4 loop. */
@@ -738,17 +759,17 @@ function built(ctx, opts) {
       });
     }
     // The builder never weakens tests, whatever status it reports: read from the branch itself, not
-    // from the result. Exemptions come from the spec as approved at init, never from the file as it
-    // is now; a loop started before 1.4 has none.
-    let specText = "";
-    let bound = true;
+    // from the result, and only from the commits after the head the loop started from. Exemptions come
+    // from the spec as approved at init, never from the file as it is now. A loop started before 1.4
+    // (no policy and no approved-spec record) keeps the 1.3 rules: no guard.
+    let guard = null;
     try {
-      specText = approvedSpec(dir, state) ?? "";
+      const specText = approvedSpec(dir, state);
+      if (specText !== null) guard = { from: loopStartHead(dir, state), specText };
     } catch (e) {
       problems.push(e.message);
-      bound = false;
     }
-    if (bound) problems.push(...testChanges(state.repo, state.baseSha, specText).problems.map((p) => `weakens tests: ${p} (existing test files are not changed unless the spec allows it; add new tests in new files; a file the "## Allowed test changes" section of the spec as approved at init names is exempt)`));
+    if (guard) problems.push(...testChanges(state.repo, guard.from, guard.specText).problems.map((p) => `weakens tests: ${p} (existing test files are not changed unless the spec allows it; add new tests in new files; a file the "## Allowed test changes" section of the spec as approved at init names is exempt)`));
     if (problems.length) {
       const esc = noteMalformed(state, key, problems.join("; "), at);
       saveState(dir, state);

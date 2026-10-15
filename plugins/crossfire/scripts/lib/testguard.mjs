@@ -1,6 +1,7 @@
 // The builder never weakens tests: existing test files are not changed unless the approved spec
-// allows it, and new tests go in new files. Read from the branch diff against the loop's base (with
-// rename detection), not from what the builder says.
+// allows it, and new tests go in new files. Read from the branch diff since the commit the loop
+// started from (with rename detection), not from what the builder says: only the loop's own builder
+// commits are judged, never what was on the branch before the loop started.
 import { run } from "./util.mjs";
 
 /**
@@ -109,21 +110,25 @@ function blob(repo, rev, file) {
 const quote = (t) => JSON.stringify(t.length > 120 ? `${t.slice(0, 117)}...` : t);
 
 /**
- * Every way the branch weakens tests against `baseSha`: an existing test file (one on the base)
- * that is deleted, renamed to a name that is not a test file, or changed in any line; and a skip or
- * focus call in a new test file. Files the spec's "## Allowed test changes" section names are
- * exempt. { problems: string[] }; a diff that cannot be read is a problem too (fail closed).
+ * Every way the commits after `fromSha` (the head the loop started from) weaken tests: an existing
+ * test file (one at `fromSha`) that is deleted, renamed to a name that is not a test file, or
+ * changed in any line; and a skip or focus call in a new test file. Files the spec's "## Allowed
+ * test changes" section names are exempt. { problems: string[] }; a diff that cannot be read, or a
+ * HEAD that no longer descends from `fromSha` (rewritten history), is a problem too (fail closed).
  */
-export function testChanges(repo, baseSha, specText) {
-  const range = `${baseSha}...HEAD`;
+export function testChanges(repo, fromSha, specText) {
+  const range = `${fromSha}...HEAD`;
   const listed = changedEntries(repo, range);
   if (listed.error) return { problems: [`could not read the branch diff to check the test files (${listed.error}); nothing is accepted until it can be read`] };
+  if (git(repo, ["merge-base", "--is-ancestor", fromSha, "HEAD"]).status !== 0) {
+    return { problems: [`HEAD does not descend from ${String(fromSha).slice(0, 12)}, the commit the loop started from (the branch was reset or rewritten); nothing is accepted until it does`] };
+  }
   const allowed = new Set(allowedTestFiles(specText));
   const problems = [];
   let mergeBase;
   const findMergeBase = () => {
     if (mergeBase === undefined) {
-      const mb = git(repo, ["merge-base", baseSha, "HEAD"]);
+      const mb = git(repo, ["merge-base", fromSha, "HEAD"]);
       mergeBase = mb.status === 0 ? mb.stdout.trim() : null;
     }
     return mergeBase;
@@ -147,13 +152,13 @@ export function testChanges(repo, baseSha, specText) {
       }
       const mb = findMergeBase();
       if (!mb) {
-        problems.push(`${e.new}: could not find the merge base to compare it with the base`);
+        problems.push(`${e.new}: could not find the merge base to compare it with the commit the loop started from`);
         continue;
       }
       const before = blob(repo, mb, e.old);
       const after = blob(repo, "HEAD", e.new);
       if (before.error || after.error) {
-        problems.push(`${e.new}: could not read it to compare with the base (${before.error ?? after.error})`);
+        problems.push(`${e.new}: could not read it to compare with the commit the loop started from (${before.error ?? after.error})`);
         continue;
       }
       if (before.id === after.id) continue; // a rename with no content change, or a mode change
