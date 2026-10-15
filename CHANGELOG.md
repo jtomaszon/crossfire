@@ -2,7 +2,7 @@
 
 ## 1.5.0
 
-Loops that cannot step on each other. Two loops in one checkout committed to the same branch and each loop's reviewers saw the other's commits; the files shared by every loop on the machine were rewritten without a lock.
+Loops that cannot step on each other. Two loops in one checkout committed to the same branch and each loop's reviewers saw the other's commits.
 
 - **One active loop per checkout.** `crossfire init` refuses, changing nothing, while a loop with another slug is active in the checkout. It names that loop and how long ago its last step was, and prints the commands to start the new loop in a worktree of its own, runnable as printed: `git worktree add ../<repo>-<slug> <slug>` (or `-b <slug> <base>` when there is no such branch), `mkdir -p` and `cp` of `.crossfire/specs/<slug>.*` into it, then `cd` and the init line pointing at the copies. With `--from-check`, it says the check belongs to this checkout. The decision and the new loop's state are made under one checkout-wide lock, `.crossfire/runs/.init.lock`. There is no flag to skip it.
 - **`init --force` keeps recorded work.** It archives and restarts only a loop that finished or has recorded nothing since its init (a bare or `--from-check` init); a loop with recorded steps is refused with the worktree commands.
