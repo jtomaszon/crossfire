@@ -14,6 +14,8 @@ Prove the spec, code once. Measured on 26 real loops and 8 checks: the first rev
 - **Precedents:** `crossfire precedent add "<ruling>"` records the owner's ruling as a dated line in `<git common dir>/crossfire/precedents.md`; builder and breaker briefs and every reviewer's focus (loop, check and spec review) carry the latest 30 under "Settled by the owner; do not raise these again". The loop skill adds one only on the person's explicit words. `crossfire precedents` lists them.
 - **Size warning:** a review pass (or check) on a diff over about 400 changed lines or 10 files, lockfiles excluded, prints `WARNING: this change is <N> lines in <M> files; past about 400 lines or 10 files, split it` and notes it in the report. It does not block.
 - **Spec template:** requirements each with an owner and the one to drop first, a "What we're deleting" section, a `**Risk:**` line (high turns the breaker on), and an optional "Allowed test changes" section.
+- `spec-review` writes its review documents without following symlinks (it refuses a symlinked `.crossfire` or `.crossfire/specs`, and replaces files instead of writing through them). A concurrent local process racing it is listed under Known issues.
+- The old-version warning fires only when the session runs an older crossfire than the installed one, not for a newer development build.
 - Nothing else is removed: `respec`, `watch` and `ladder` stay.
 
 ## 1.3.0
