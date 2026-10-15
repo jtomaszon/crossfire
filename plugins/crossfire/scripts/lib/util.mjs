@@ -1,5 +1,6 @@
 // Small shared helpers: process execution, exit codes, errors. Node stdlib only.
 import { spawnSync } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -64,40 +65,37 @@ export function atomicWriteText(file, text) {
 const sleepMs = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
 /**
- * Run `fn` holding `lock`, a file created exclusively. Retried for up to `waitMs`; a lock older
- * than `staleMs` (left by a crashed process) is moved aside and taken over. When it cannot be
- * taken in time, throws a CrossfireError with `lockBusy` set. Released only if still ours.
+ * Run `fn` holding `lock`, a file created exclusively with a unique token. Retried for up to `waitMs`.
+ * A lock older than `staleMs` (left by a crashed process) is taken over. Whoever creates the claim file
+ * `<lock>.takeover-<id of that lock>` is the only process that may remove that lock: its holder
+ * releasing it, or one waiter that re-checks the claimed lock is still the exact one it judged stale.
+ * Nothing else ever moves or removes a lock. When it cannot be taken in time, throws a
+ * CrossfireError with `lockBusy` set (`busyMessage` replaces the default text).
  */
-export function withFileLock(lock, fn, { waitMs = 10_000, staleMs = 60_000 } = {}) {
+export function withFileLock(lock, fn, { waitMs = 10_000, staleMs = 60_000, busyMessage } = {}) {
   fs.mkdirSync(path.dirname(lock), { recursive: true });
-  const token = `${process.pid}-${Math.random().toString(36).slice(2)}`;
+  const token = `${process.pid}-${crypto.randomBytes(8).toString("hex")}`;
   const deadline = Date.now() + waitMs;
   for (;;) {
-    try {
-      fs.writeFileSync(lock, token, { flag: "wx" });
-      break;
-    } catch (e) {
-      if (e.code !== "EEXIST") throw e;
-    }
-    const age = Date.now() - (fs.statSync(lock, { throwIfNoEntry: false })?.mtimeMs ?? Date.now());
-    if (age > staleMs) {
-      // Only one process can move it aside; if what it moved is fresh after all, it goes back.
-      const aside = `${lock}.stale-${token}`;
-      try {
-        fs.renameSync(lock, aside);
-      } catch {
+    if (createExclusive(lock, token)) break;
+    const seen = peekLock(lock);
+    let claimed = null;
+    if (seen && Date.now() - seen.mtimeMs > staleMs) {
+      const claim = claimFile(lock, seen);
+      if (createExclusive(claim, token)) {
+        try {
+          const now = peekLock(lock); // nobody else may remove it while we hold its claim
+          if (now && now.text === seen.text && now.mtimeMs === seen.mtimeMs) fs.rmSync(lock, { force: true });
+        } finally {
+          fs.rmSync(claim, { force: true });
+        }
         continue;
       }
-      try {
-        if (Date.now() - fs.statSync(aside).mtimeMs <= staleMs) fs.linkSync(aside, lock);
-      } catch {
-        /* someone else holds it now; retry */
-      }
-      fs.rmSync(aside, { force: true });
-      continue;
+      claimed = claim;
     }
     if (Date.now() >= deadline) {
-      const err = new CrossfireError(`${lock} is held by another crossfire process (waited ${Math.round(waitMs / 1000)} s)`, EXIT.ENVIRONMENT);
+      const why = claimed ? `; it is stale and ${claimed} claims it (a takeover or release that did not finish): if no crossfire process is running, remove both files` : "";
+      const err = new CrossfireError(`${busyMessage ?? `${lock} is held by another crossfire process (waited ${Math.round(waitMs / 1000)} s)`}${why}`, EXIT.ENVIRONMENT);
       err.lockBusy = true;
       throw err;
     }
@@ -106,14 +104,48 @@ export function withFileLock(lock, fn, { waitMs = 10_000, staleMs = 60_000 } = {
   try {
     return fn();
   } finally {
-    let held = "";
-    try {
-      held = fs.readFileSync(lock, "utf8");
-    } catch {
-      /* already gone */
+    const claim = claimFile(lock, { text: token });
+    // If a waiter holds our claim, our lock went stale and that waiter removes it.
+    if (createExclusive(claim, token)) {
+      try {
+        if (peekLock(lock)?.text === token) fs.rmSync(lock, { force: true });
+      } finally {
+        fs.rmSync(claim, { force: true });
+      }
     }
-    if (held === token) fs.rmSync(lock, { force: true });
   }
+}
+
+function createExclusive(file, text) {
+  try {
+    fs.writeFileSync(file, text, { flag: "wx" });
+    return true;
+  } catch (e) {
+    if (e.code === "EEXIST") return false;
+    throw e;
+  }
+}
+
+/** Content and mtime of one and the same lock file, or null when there is none. */
+function peekLock(file) {
+  let fd;
+  try {
+    fd = fs.openSync(file, "r");
+  } catch (e) {
+    if (e.code === "ENOENT") return null;
+    throw e;
+  }
+  try {
+    const { mtimeMs } = fs.fstatSync(fd);
+    return { text: fs.readFileSync(fd, "utf8"), mtimeMs };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function claimFile(lock, { text, mtimeMs }) {
+  const id = crypto.createHash("sha256").update(text ? text : `empty ${mtimeMs}`).digest("hex").slice(0, 16);
+  return `${lock}.takeover-${id}`;
 }
 
 export function writeText(file, text) {

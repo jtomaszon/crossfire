@@ -423,7 +423,7 @@ function init(ctx, opts) {
     if (sameSlugGuard(dir, slug, opts, help)) {
       const archived = `${dir}.archived-${nowIso().replace(/[:.]/g, "")}`;
       fs.mkdirSync(archived, { recursive: true });
-      for (const f of fs.readdirSync(dir)) if (f !== ".lock") fs.renameSync(path.join(dir, f), path.join(archived, f));
+      for (const f of fs.readdirSync(dir)) if (!f.startsWith(".lock")) fs.renameSync(path.join(dir, f), path.join(archived, f));
     }
     const state = newState({
       slug,
@@ -529,10 +529,17 @@ function worktreeHelp(repo, { slug, base, opts, spec, plan, fromCheck }) {
     if (["slug", "spec", "plan", "force", "cwd", "json", "from-check"].includes(k)) continue;
     for (const one of [v].flat()) args.push(...(one === true ? [`--${k}`] : [`--${k}`, String(one)]));
   }
+  const exists = Boolean(git.resolveRef(repo, `refs/heads/${slug}`));
+  // git refuses a worktree for a branch checked out elsewhere: print no command that cannot work.
+  const at = exists ? git.worktreeOf(repo, slug) : null;
+  if (at) {
+    const here = fs.realpathSync(at) === fs.realpathSync(repo);
+    return [here ? `the loop's branch ${slug} is already checked out at ${at} (this checkout), so no new worktree can use it: switch this checkout back to the branch it was on and run init again for the worktree commands, or pick another slug.` : `the loop's branch ${slug} is already checked out at ${at}; run crossfire init there, or pick another slug.`];
+  }
   return [
     "Start the new loop in a worktree of its own; run these as printed:",
     `  cd ${shq(repo)}`,
-    `  git worktree add ${shq(target)} ${git.resolveRef(repo, `refs/heads/${slug}`) ? shq(slug) : `-b ${shq(slug)} ${shq(base)}`}`,
+    `  git worktree add ${shq(target)} ${exists ? shq(slug) : `-b ${shq(slug)} ${shq(base)}`}`,
     ...(copies ? [`  mkdir -p ${shq(target)}/.crossfire/specs`, `  cp .crossfire/specs/${slug}.* ${shq(target)}/.crossfire/specs/`] : []),
     `  cd ${shq(target)}`,
     `  ${args.map(shq).join(" ")}`,

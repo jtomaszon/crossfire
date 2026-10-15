@@ -36,6 +36,17 @@ export function resolveRef(cwd, ref) {
   return r.status === 0 ? r.stdout.trim() : null;
 }
 
+/** The worktree path where `branch` is checked out, or null (from `git worktree list --porcelain`). */
+export function worktreeOf(cwd, branchName) {
+  const r = git(cwd, ["worktree", "list", "--porcelain"]);
+  if (r.status !== 0) throw new CrossfireError(`git worktree list failed: ${r.stderr.trim()}`, EXIT.ENVIRONMENT);
+  for (const block of r.stdout.split(/\n\n+/)) {
+    const lines = block.split("\n");
+    if (lines.includes(`branch refs/heads/${branchName}`)) return lines.find((l) => l.startsWith("worktree "))?.slice("worktree ".length) ?? null;
+  }
+  return null;
+}
+
 /** Uncommitted changes, untracked files included. Empty array means clean. */
 export function dirtyPaths(cwd) {
   const r = git(cwd, ["status", "--porcelain", "--untracked-files=all"]);
