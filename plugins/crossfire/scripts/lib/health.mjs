@@ -33,7 +33,18 @@ export function readHealth(file = healthFile()) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return health;
   for (const [reviewer, list] of Object.entries(raw)) {
     if (reviewer === "__proto__" || !Array.isArray(list)) continue;
-    health[reviewer] = list.filter((a) => a && typeof a === "object" && !Array.isArray(a) && typeof a.ok === "boolean" && typeof a.at === "string");
+    health[reviewer] = list
+      .filter((a) => a && typeof a === "object" && !Array.isArray(a) && typeof a.ok === "boolean" && typeof a.at === "string")
+      // Rebuild each entry from only the fields whose type is safe to keep: every optional field
+      // (error, seconds, and any future one) is normalized to its expected type or dropped, so a
+      // malformed value (an object, an array, NaN) never survives into a consumer that interpolates
+      // or arithmetic-ops it (e.g. doctor's `${h.lastError}`).
+      .map((a) => {
+        const entry = { ok: a.ok, at: a.at };
+        if (typeof a.seconds === "number" && Number.isFinite(a.seconds)) entry.seconds = a.seconds;
+        if (typeof a.error === "string") entry.error = a.error;
+        return entry;
+      });
   }
   return health;
 }
