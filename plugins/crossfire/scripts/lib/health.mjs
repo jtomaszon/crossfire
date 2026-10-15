@@ -6,7 +6,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { atomicWriteJson, withFileLock } from "./util.mjs";
+import { atomicWriteJson } from "./util.mjs";
 
 const KEEP = 20; // most recent attempts kept per reviewer
 
@@ -27,17 +27,14 @@ export function readHealth(file = healthFile()) {
 
 /** Record one reviewer attempt. Errors are cut to one line; no code or findings are stored. */
 export function recordAttempt(reviewer, { ok, at, seconds, error }, file = healthFile()) {
+  const health = readHealth(file);
+  const list = health[reviewer] ?? [];
+  list.push({ ok, at, seconds, error: ok ? undefined : String(error ?? "").split("\n")[0].slice(0, 300) });
+  health[reviewer] = list.slice(-KEEP);
   try {
-    withFileLock(`${file}.lock`, () => {
-      const health = readHealth(file);
-      const list = health[reviewer] ?? [];
-      list.push({ ok, at, seconds, error: ok ? undefined : String(error ?? "").split("\n")[0].slice(0, 300) });
-      health[reviewer] = list.slice(-KEEP);
-      atomicWriteJson(file, health);
-    });
-  } catch (e) {
-    // health is advisory; never fail a review over it
-    if (e.lockBusy) process.stderr.write(`crossfire: WARNING: reviewer health not updated: ${e.message}\n`);
+    atomicWriteJson(file, health);
+  } catch {
+    /* health is advisory; never fail a review over it */
   }
 }
 

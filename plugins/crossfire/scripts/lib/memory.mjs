@@ -6,7 +6,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import { gitCommonDir } from "./git.mjs";
-import { atomicWriteText, withFileLock } from "./util.mjs";
 
 const MAX_LINES = 200;
 const HEADER = "# What reviewers found in this repository\n\nWritten by crossfire after each loop and check; local only, never committed. Newest last.\n";
@@ -35,16 +34,6 @@ export function readLessons(cwd, max = 30) {
 export function appendLessons(cwd, entries) {
   if (!entries.length) return 0;
   const file = memoryFile(cwd);
-  try {
-    return withFileLock(`${file}.lock`, () => appendLocked(file, entries));
-  } catch (e) {
-    if (!e.lockBusy) throw e;
-    process.stderr.write(`crossfire: WARNING: memory not updated: ${e.message}\n`); // advisory
-    return 0;
-  }
-}
-
-function appendLocked(file, entries) {
   const existing = fs.existsSync(file) ? fs.readFileSync(file, "utf8").split("\n").filter((l) => l.startsWith("- ")) : [];
   const seen = new Set(existing.map((l) => key(l.split(" · ").slice(3).join(" · ").replace(/\s*\([^)]*\)\s*$/, ""))));
   const added = [];
@@ -57,7 +46,8 @@ function appendLocked(file, entries) {
   }
   if (!added.length) return 0;
   const all = [...existing, ...added].slice(-MAX_LINES);
-  atomicWriteText(file, `${HEADER}\n${all.join("\n")}\n`);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${HEADER}\n${all.join("\n")}\n`);
   return added.length;
 }
 

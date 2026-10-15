@@ -1,8 +1,9 @@
 // 1.5.0: loops cannot step on each other. One active loop per checkout (decided under a lock),
-// abandon only a loop that looks stuck, --force never wipes recorded work, shared files under a lock.
+// abandon only a loop that looks stuck, --force never wipes recorded work.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { sandbox, approve, needs, finding, gitc, sh, CLI, ROOT } from "./helpers.mjs";
@@ -89,18 +90,6 @@ test("AC-1b/FM-2: two concurrent inits with different slugs: exactly one loop st
   assert.ok(!fs.existsSync(`${sb.repo}/.crossfire/runs/.init.lock`), "the init lock is released");
 });
 
-test("FM-6: a checkout-wide init lock older than 60 s is taken over", (t) => {
-  const sb = sandbox();
-  t.after(() => sb.cleanup());
-  const lock = `${sb.repo}/.crossfire/runs/.init.lock`;
-  fs.mkdirSync(path.dirname(lock), { recursive: true });
-  fs.writeFileSync(lock, "999999-crashed");
-  const old = new Date(Date.now() - 61 * 1000);
-  fs.utimesSync(lock, old, old);
-  assert.equal(init(sb, "one").status, 0);
-  assert.ok(!fs.existsSync(lock));
-});
-
 test("AC-2/FM-1: abandon ends only a loop that looks stuck, under its lock", (t) => {
   const sb = sandbox();
   t.after(() => sb.cleanup());
@@ -111,9 +100,9 @@ test("AC-2/FM-1: abandon ends only a loop that looks stuck, under its lock", (t)
   assert.match(r.stderr, /does not look stuck: its last step was 2 h 59 min ago/);
   age(sb, "one", 3 * H + M);
   const lock = `${sb.repo}/.crossfire/runs/one/.lock`;
-  fs.writeFileSync(lock, "1");
+  fs.writeFileSync(lock, `${process.pid} ${os.hostname()}\n${new Date().toISOString()}\n`);
   r = sb.cf("abandon", "--slug", "one");
-  assert.equal(r.status, 5, "a fresh lock: a command is running");
+  assert.equal(r.status, 5, "a live holder: a command is running");
   assert.match(init(sb, "two").stderr, /last step 3 h 1 min ago\n/, "a held lock: it does not look stuck");
   assert.equal(readState(sb, "one").phase, "build", "nothing changed");
   fs.rmSync(lock);
@@ -185,71 +174,6 @@ test("FM-7: the printed commands run as printed: branch exists, spec in .crossfi
   const wt = path.join(sb.tmp, "repo-two");
   assert.equal(sh(wt, "git", ["branch", "--show-current"]), "two");
   assert.equal(JSON.parse(fs.readFileSync(`${wt}/.crossfire/runs/two/state.json`, "utf8")).specReview.status, "current");
-});
-
-// ---- AC-5: shared files under a machine-wide lock --------------------------------------
-
-const LIB = path.join(ROOT, "plugins", "crossfire", "scripts", "lib");
-
-function writers(sb, script, n) {
-  return Promise.all(
-    Array.from({ length: n }, (_, i) =>
-      new Promise((resolve) => {
-        const p = spawn(process.execPath, ["--input-type=module", "-e", script(i)], { cwd: sb.repo, env: sb.env });
-        let err = "";
-        p.stderr.on("data", (d) => (err += d));
-        p.on("close", (status) => resolve({ status, err }));
-      }),
-    ),
-  );
-}
-
-test("AC-5/FM-5: concurrent memory and health writers lose no update", async (t) => {
-  const sb = sandbox();
-  t.after(() => sb.cleanup());
-  const mem = (i) => `import { appendLessons } from "${LIB}/memory.mjs"; for (let k = 0; k < 10; k++) appendLessons(process.cwd(), [{ date: "2026-01-01", severity: "HIGH", file: "a.js", lesson: "lesson ${i} " + k, source: "t" }]);`;
-  const health = (i) => `import { recordAttempt } from "${LIB}/health.mjs"; for (let k = 0; k < 10; k++) recordAttempt("r${i}", { ok: true, at: "x", seconds: 1 });`;
-  const results = [...(await writers(sb, mem, 4)), ...(await writers(sb, health, 4))];
-  assert.ok(results.every((r) => r.status === 0 && !r.err), results.map((r) => r.err).join("\n"));
-  const lines = fs.readFileSync(`${sb.repo}/.git/crossfire/memory.md`, "utf8").split("\n").filter((l) => l.startsWith("- "));
-  assert.equal(lines.length, 40);
-  const h = JSON.parse(fs.readFileSync(`${sb.tmp}/state/reviewers.json`, "utf8"));
-  assert.deepEqual([0, 1, 2, 3].map((i) => h[`r${i}`].length), [10, 10, 10, 10]);
-});
-
-test("AC-5/FM-6: a stale shared lock is taken over; a held one skips memory and health with a warning and fails a precedent add", async (t) => {
-  const sb = sandbox();
-  t.after(() => sb.cleanup());
-  const dir = `${sb.repo}/.git/crossfire`;
-  fs.mkdirSync(dir, { recursive: true });
-  const locks = [`${dir}/memory.md.lock`, `${dir}/precedents.md.lock`, `${sb.tmp}/state/reviewers.json.lock`];
-  fs.mkdirSync(`${sb.tmp}/state`, { recursive: true });
-  const old = new Date(Date.now() - 61 * 1000);
-  for (const l of locks) {
-    fs.writeFileSync(l, "crashed");
-    fs.utimesSync(l, old, old);
-  }
-  const all = `import { appendLessons } from "${LIB}/memory.mjs"; import { recordAttempt } from "${LIB}/health.mjs"; import { appendPrecedent } from "${LIB}/precedents.mjs";
-    appendLessons(process.cwd(), [{ date: "2026-01-01", severity: "HIGH", file: "a.js", lesson: "a lesson", source: "t" }]);
-    recordAttempt("codex", { ok: true, at: "x", seconds: 1 });
-    try { appendPrecedent(process.cwd(), "a ruling"); } catch (e) { console.log("PRECEDENT: " + e.message); }`;
-  let [r] = await writers(sb, () => all, 1);
-  assert.equal(r.status, 0, r.err);
-  assert.equal(r.err, "");
-  assert.match(fs.readFileSync(`${dir}/memory.md`, "utf8"), /a lesson/);
-  assert.match(fs.readFileSync(`${dir}/precedents.md`, "utf8"), /a ruling/);
-  assert.equal(JSON.parse(fs.readFileSync(`${sb.tmp}/state/reviewers.json`, "utf8")).codex.length, 1);
-  for (const l of locks) assert.ok(!fs.existsSync(l), `${l} released`);
-
-  for (const l of locks) fs.writeFileSync(l, "held");
-  const p = spawnSync(process.execPath, ["--input-type=module", "-e", all.replace(/a lesson/, "b lesson").replace(/a ruling/, "b ruling")], { cwd: sb.repo, env: sb.env, encoding: "utf8" });
-  assert.equal(p.status, 0, p.stderr);
-  assert.match(p.stderr, /WARNING: memory not updated: .*memory\.md\.lock is held by another crossfire process/);
-  assert.match(p.stderr, /WARNING: reviewer health not updated/);
-  assert.match(p.stdout, /PRECEDENT: the precedent was not added: .*precedents\.md\.lock is held/);
-  assert.doesNotMatch(fs.readFileSync(`${dir}/memory.md`, "utf8"), /b lesson/);
-  assert.doesNotMatch(fs.readFileSync(`${dir}/precedents.md`, "utf8"), /b ruling/);
-  assert.equal(JSON.parse(fs.readFileSync(`${sb.tmp}/state/reviewers.json`, "utf8")).codex.length, 1);
 });
 
 // ---- AC-6: docs ----------------------------------------------------------------------

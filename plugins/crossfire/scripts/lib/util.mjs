@@ -1,7 +1,7 @@
 // Small shared helpers: process execution, exit codes, errors. Node stdlib only.
 import { spawnSync } from "node:child_process";
-import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 export const EXIT = Object.freeze({
@@ -65,87 +65,95 @@ export function atomicWriteText(file, text) {
 const sleepMs = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
 /**
- * Run `fn` holding `lock`, a file created exclusively with a unique token. Retried for up to `waitMs`.
- * A lock older than `staleMs` (left by a crashed process) is taken over. Whoever creates the claim file
- * `<lock>.takeover-<id of that lock>` is the only process that may remove that lock: its holder
- * releasing it, or one waiter that re-checks the claimed lock is still the exact one it judged stale.
- * Nothing else ever moves or removes a lock. When it cannot be taken in time, throws a
- * CrossfireError with `lockBusy` set (`busyMessage` replaces the default text).
+ * Run `fn` holding `lock`: a file created exclusively (`wx`) with `<pid> <hostname>` and the time.
+ * It is held while its process is alive on this host, however old; a live holder is waited for up to
+ * `waitMs`. Nothing takes a lock over: one whose process is gone, from another host or unreadable is
+ * refused, naming `unlock`. The holder removes it only while it still holds the content it wrote.
  */
-export function withFileLock(lock, fn, { waitMs = 10_000, staleMs = 60_000, busyMessage } = {}) {
+export function withFileLock(lock, fn, { waitMs = 0, busy = `${lock} is held`, unlock = "crossfire unlock" } = {}) {
   fs.mkdirSync(path.dirname(lock), { recursive: true });
-  const token = `${process.pid}-${crypto.randomBytes(8).toString("hex")}`;
+  const mine = `${process.pid} ${os.hostname()}\n${new Date().toISOString()}\n`;
   const deadline = Date.now() + waitMs;
-  for (;;) {
-    if (createExclusive(lock, token)) break;
-    const seen = peekLock(lock);
-    let claimed = null;
-    if (seen && Date.now() - seen.mtimeMs > staleMs) {
-      const claim = claimFile(lock, seen);
-      if (createExclusive(claim, token)) {
-        try {
-          const now = peekLock(lock); // nobody else may remove it while we hold its claim
-          if (now && now.text === seen.text && now.mtimeMs === seen.mtimeMs) fs.rmSync(lock, { force: true });
-        } finally {
-          fs.rmSync(claim, { force: true });
-        }
-        continue;
-      }
-      claimed = claim;
-    }
-    if (Date.now() >= deadline) {
-      const why = claimed ? `; it is stale and ${claimed} claims it (a takeover or release that did not finish): if no crossfire process is running, remove both files` : "";
-      const err = new CrossfireError(`${busyMessage ?? `${lock} is held by another crossfire process (waited ${Math.round(waitMs / 1000)} s)`}${why}`, EXIT.ENVIRONMENT);
-      err.lockBusy = true;
-      throw err;
+  while (!createExclusive(lock, mine)) {
+    let seen = readLock(lock);
+    for (let i = 0; seen && !seen.parsed && i < 20; i += 1) seen = (sleepMs(50), readLock(lock)); // a lock being created is empty for an instant
+    if (!seen) continue; // released in between
+    if (!seen.alive || Date.now() >= deadline) {
+      const fix = seen.alive ? `wait for it; if that process is stuck, stop it, then the person runs ${unlock}` : seen.here ? `nothing takes a lock over: if the person confirms no crossfire command is running, run ${unlock}` : `nothing takes a lock over, and ${unlock} removes only the lock of a gone process on this host: the person checks no crossfire command uses it and deletes ${lock} by hand`;
+      throw new CrossfireError(`${busy}: ${describeLock(seen)}; ${fix}`, EXIT.ENVIRONMENT);
     }
     sleepMs(50);
   }
   try {
     return fn();
   } finally {
-    const claim = claimFile(lock, { text: token });
-    // If a waiter holds our claim, our lock went stale and that waiter removes it.
-    if (createExclusive(claim, token)) {
-      try {
-        if (peekLock(lock)?.text === token) fs.rmSync(lock, { force: true });
-      } finally {
-        fs.rmSync(claim, { force: true });
-      }
+    if (readLock(lock)?.text === mine) fs.rmSync(lock, { force: true });
+  }
+}
+
+/** A lock file's text, age, pid and host, and whether its process runs on this host (EPERM: it runs); null if none. */
+export function readLock(file) {
+  let text;
+  let mtimeMs;
+  try {
+    const fd = fs.openSync(file, "r");
+    try {
+      ({ mtimeMs } = fs.fstatSync(fd));
+      text = fs.readFileSync(fd, "utf8");
+    } finally {
+      fs.closeSync(fd);
     }
-  }
-}
-
-function createExclusive(file, text) {
-  try {
-    fs.writeFileSync(file, text, { flag: "wx" });
-    return true;
-  } catch (e) {
-    if (e.code === "EEXIST") return false;
-    throw e;
-  }
-}
-
-/** Content and mtime of one and the same lock file, or null when there is none. */
-function peekLock(file) {
-  let fd;
-  try {
-    fd = fs.openSync(file, "r");
   } catch (e) {
     if (e.code === "ENOENT") return null;
     throw e;
   }
+  const m = /^([1-9]\d*) (\S+)(?:\n|$)/.exec(text);
+  const here = Boolean(m) && m[2] === os.hostname();
+  let alive = here;
   try {
-    const { mtimeMs } = fs.fstatSync(fd);
-    return { text: fs.readFileSync(fd, "utf8"), mtimeMs };
+    if (here) process.kill(Number(m[1]), 0);
+  } catch (e) {
+    alive = e.code === "EPERM";
+  }
+  return { file, text, ageMs: Date.now() - mtimeMs, pid: m ? Number(m[1]) : null, host: m?.[2] ?? null, parsed: Boolean(m), here, alive };
+}
+
+export function ageText(ms) {
+  const m = Math.max(0, Math.floor(ms / 60000));
+  return `${Math.floor(m / 60)} h ${m % 60} min`;
+}
+
+function describeLock(seen) {
+  const why = !seen.parsed ? "it cannot be read as `<pid> <hostname>`" : !seen.here ? `it was written on another host (${seen.host}), where this host cannot see whether its process runs` : `process ${seen.pid} on this host is ${seen.alive ? "running" : "gone"}`;
+  return `${seen.file} (contents ${JSON.stringify(seen.text.trim())}, ${ageText(seen.ageMs)} old); ${why}`;
+}
+
+/** Remove `lock` only if it is still `judged` and that is the lock of a gone process on this host; returns it. */
+export function unlockDead(lock, judged = readLock(lock)) {
+  if (!judged) throw new CrossfireError(`no lock at ${lock}; nothing was removed`);
+  if (!judged.here || judged.alive) throw new CrossfireError(`${describeLock(judged)}; crossfire unlock removes only the lock of a gone process on this host; nothing was removed`);
+  if (readLock(lock)?.text !== judged.text) throw new CrossfireError(`${lock} changed after it was judged; nothing was removed`);
+  fs.rmSync(lock, { force: true });
+  return judged;
+}
+
+function createExclusive(file, text) {
+  let fd;
+  try {
+    fd = fs.openSync(file, "wx");
+  } catch (e) {
+    if (e.code === "EEXIST") return false;
+    throw e;
+  }
+  try {
+    fs.writeSync(fd, text);
+  } catch (e) {
+    fs.rmSync(file, { force: true }); // ours, created a moment ago
+    throw e;
   } finally {
     fs.closeSync(fd);
   }
-}
-
-function claimFile(lock, { text, mtimeMs }) {
-  const id = crypto.createHash("sha256").update(text ? text : `empty ${mtimeMs}`).digest("hex").slice(0, 16);
-  return `${lock}.takeover-${id}`;
+  return true;
 }
 
 export function writeText(file, text) {

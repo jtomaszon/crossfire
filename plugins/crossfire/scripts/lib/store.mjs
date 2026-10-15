@@ -77,13 +77,10 @@ export function saveState(dir, state) {
   readAs.set(state, text);
 }
 
-/** One crossfire command per loop at a time. A lock older than 2 hours is stale (left by a crashed process). */
-export const LOCK_STALE_MS = 2 * 60 * 60 * 1000;
-
+/** One crossfire command per loop at a time: held while its process runs, never taken over. */
 export function withLock(dir, fn) {
   fs.mkdirSync(dir, { recursive: true });
-  const lock = files.lock(dir);
-  return withFileLock(lock, fn, { waitMs: 0, staleMs: LOCK_STALE_MS, busyMessage: `another crossfire command is running for this loop (${lock}); wait for it` });
+  return withFileLock(files.lock(dir), fn, { busy: "another crossfire command is running for this loop", unlock: `crossfire unlock --slug ${path.basename(dir)}` });
 }
 
 export function listRuns(cwd) {

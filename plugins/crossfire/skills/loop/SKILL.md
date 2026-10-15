@@ -116,6 +116,7 @@ Before starting loops in parallel, answer with numbers, and tell the user:
 - **Liveness:** whoever coordinates checks every loop at least hourly with `crossfire status` and acts on `STALLED`; "waiting" with no new step for an hour is a stall, not progress.
 - Several loops can run at once only in separate worktrees with separate slugs. One loop per checkout is enforced: `crossfire init` refuses while another loop is active in the checkout (and `init --force` will not restart a loop that has recorded steps). When init refuses, run the commands it prints: they make the new worktree, copy the spec and start the loop there.
 - `crossfire abandon --slug <slug>` only on the person's explicit words, and only for a loop init reports as looking stuck (no step for 3 hours, no command running). Never edit or delete files under `.crossfire/` to get around a refusal.
+- `crossfire unlock --slug <slug>` (or `--init`) only on the person's explicit words, like `abandon`: when a command refuses a lock whose process is gone, show the person the message and wait for them to say so. Never run it on your own decision.
 
 ## Gates the referee enforces (for explaining an escalation)
 
