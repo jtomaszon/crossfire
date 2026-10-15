@@ -4,7 +4,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { run } from "./util.mjs";
+import { CrossfireError, EXIT, run } from "./util.mjs";
 import { precedentsFocus } from "./precedents.mjs";
 
 export const SPEC_REVIEW_DIR = "crossfire-spec-review";
@@ -20,6 +20,76 @@ export function specReviewFiles(specsDir, slug) {
     md: path.join(specsDir, `${slug}.review.md`),
     response: path.join(specsDir, `${slug}.review-response.md`),
   };
+}
+
+function lstatOrNull(p) {
+  try {
+    return fs.lstatSync(p);
+  } catch (e) {
+    if (e.code === "ENOENT") return null;
+    throw e;
+  }
+}
+
+/** The .crossfire/specs directory under `repo`, and a refusal for any target that is not directly in it. */
+function specsDirFor(repo, file) {
+  const specsDir = path.join(repo, ".crossfire", "specs");
+  if (path.dirname(path.resolve(file)) !== specsDir) throw new CrossfireError(`spec-review writes only directly under ${specsDir}, not ${file}`);
+  return specsDir;
+}
+
+/**
+ * Refuse (naming the path) when .crossfire, .crossfire/specs or a target is a symlink, a directory
+ * on the way is not a directory, or a target exists and is not a regular file. Missing paths are fine.
+ */
+export function checkSpecReviewPaths(repo, targets) {
+  for (const file of targets) {
+    specsDirFor(repo, file);
+    let missing = false;
+    for (const dir of [path.join(repo, ".crossfire"), path.join(repo, ".crossfire", "specs")]) {
+      const st = lstatOrNull(dir);
+      if (!st) {
+        missing = true;
+        break;
+      }
+      if (st.isSymbolicLink()) throw new CrossfireError(`refusing to write the spec review: ${dir} is a symlink. Remove it and run spec-review again.`, EXIT.ENVIRONMENT);
+      if (!st.isDirectory()) throw new CrossfireError(`refusing to write the spec review: ${dir} is not a directory.`, EXIT.ENVIRONMENT);
+    }
+    if (missing) continue;
+    const st = lstatOrNull(file);
+    if (!st) continue;
+    if (st.isSymbolicLink()) throw new CrossfireError(`refusing to write the spec review: ${file} is a symlink. Remove it and run spec-review again.`, EXIT.ENVIRONMENT);
+    if (!st.isFile()) throw new CrossfireError(`refusing to write the spec review: ${file} is not a regular file.`, EXIT.ENVIRONMENT);
+  }
+}
+
+/**
+ * Replace `file` without following a symlink at it: write a new temporary file in the same
+ * directory (O_EXCL, so it never opens an existing path) and rename it over the target.
+ */
+export function replaceFile(file, text) {
+  const tmp = path.join(path.dirname(file), `.${path.basename(file)}.tmp-${process.pid}-${crypto.randomBytes(6).toString("hex")}`);
+  try {
+    fs.writeFileSync(tmp, text, { flag: "wx" });
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    fs.rmSync(tmp, { force: true });
+    throw e;
+  }
+}
+
+/** The one write spec-review uses under .crossfire/specs/: check every path, create missing directories one by one, replace the file. */
+export function writeSpecReviewFile(repo, file, text) {
+  checkSpecReviewPaths(repo, [file]);
+  for (const dir of [path.join(repo, ".crossfire"), specsDirFor(repo, file)]) {
+    try {
+      fs.mkdirSync(dir);
+    } catch (e) {
+      if (e.code !== "EEXIST") throw e;
+    }
+  }
+  checkSpecReviewPaths(repo, [file]); // a directory swapped for a symlink while it was being created
+  replaceFile(file, text);
 }
 
 /** The reviewers' focus for a spec review: the document as a design, never the pull-request focus. */

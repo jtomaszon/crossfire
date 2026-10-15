@@ -16,7 +16,7 @@ import { renderCheckReport, renderReport, settingsText, statusLine } from "./lib
 import { appendLessons, lessonsBlock, lessonsFromCheck, lessonsFromLoop, memoryFile, readLessons } from "./lib/memory.mjs";
 import { autoSkip, classifyProofFailure, grokSocketHint, readHealth, recordAttempt, summarize } from "./lib/health.mjs";
 import { appendPrecedent, precedentsBlock, precedentsFile, readPrecedents } from "./lib/precedents.mjs";
-import { SPEC_REVIEW_DIR, buildSpecFocus, diffSize, readSpecReview, renderSpecReviewMd, riskHigh, sha256, sizeWarning, specReviewFiles, specReviewStatus } from "./lib/specreview.mjs";
+import { SPEC_REVIEW_DIR, buildSpecFocus, checkSpecReviewPaths, diffSize, readSpecReview, renderSpecReviewMd, riskHigh, sha256, sizeWarning, specReviewFiles, specReviewStatus, writeSpecReviewFile } from "./lib/specreview.mjs";
 import { testChanges } from "./lib/testguard.mjs";
 import { CrossfireError, EXIT, atomicWriteJson, minutesBetween, nowIso, readJsonFile, run, runShell, tail, writeText } from "./lib/util.mjs";
 
@@ -576,9 +576,11 @@ function specReviewCmd(ctx, opts) {
   const grokPlan = grokFor({ grok, plugins });
   const reviewers = [plugins.codex, ...(grokPlan.run ? [plugins.grok] : [])];
 
-  ensureExcluded(repo);
   const specsDir = path.join(crossfireRoot(repo), "specs");
   const out_ = specReviewFiles(specsDir, slug);
+  // Refuse a symlinked .crossfire, .crossfire/specs or review document before anything runs or is written.
+  checkSpecReviewPaths(repo, [out_.json, out_.md]);
+  ensureExcluded(repo);
   const specBytes = fs.readFileSync(spec);
   const planBytes = plan ? fs.readFileSync(plan) : null;
   const focus = buildSpecFocus({ slug, base, hasPlan: Boolean(plan), precedents: readPrecedents(repo) });
@@ -595,8 +597,9 @@ function specReviewCmd(ctx, opts) {
   }
   const findings = collectFindings(results.filter((r) => r.ok));
   const record = { version: 1, slug, at, repo, spec, plan, base, baseSha, specSha256: sha256(specBytes), planSha256: planBytes ? sha256(planBytes) : null, reviewers: reviewerRuns, reviewersText, findings, responseFile: out_.response };
-  atomicWriteJson(out_.json, record);
-  writeText(out_.md, renderSpecReviewMd(record));
+  checkSpecReviewPaths(repo, [out_.json, out_.md]);
+  writeSpecReviewFile(repo, out_.json, `${JSON.stringify(record, null, 2)}\n`);
+  writeSpecReviewFile(repo, out_.md, renderSpecReviewMd(record));
   const sev = (f) => f.reviewerSeverity ?? f.severity;
   const counts = ["high", "medium", "low"].map((x) => `${findings.filter((f) => (["critical", "high"].includes(String(sev(f)).toLowerCase()) ? "high" : String(sev(f)).toLowerCase() === "medium" ? "medium" : "low") === x).length} ${x}`).join(", ");
   const lines = [
