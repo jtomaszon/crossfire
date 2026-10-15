@@ -572,14 +572,21 @@ function sameSlugGuard(dir, slug, opts, help) {
 const initLockFile = (cwd) => path.join(runsRoot(cwd), ".init.lock");
 const INIT_LOCK = { waitMs: 10_000, busy: "another crossfire init is running in this checkout", unlock: "crossfire unlock --init" };
 
-/** AC-3b: remove a lock left by a process on this host that is gone; on the person's own words. */
+/**
+ * AC-3b: remove a lock left by a process on this host that is gone (or unreadable and older than 60 s);
+ * on the person's own words. One unlock at a time: each holds the checkout's unlock marker, so no new lock
+ * can appear at the target until this one unlock has removed the dead one. A marker left by a crashed
+ * unlock is refused, never cleared automatically.
+ */
 function unlockCmd(ctx, opts) {
   if (Boolean(opts.init) === Boolean(opts.slug)) throw new CrossfireError("usage: crossfire unlock --slug <slug>, or crossfire unlock --init");
   const lock = opts.init ? initLockFile(ctx.cwd) : files.lock(runDir(ctx.cwd, opts.slug));
   if (!fs.existsSync(lock)) throw new CrossfireError(`no lock at ${lock}; nothing was removed`);
-  // A loop's lock is judged under the init lock, so two unlocks never judge it at once.
-  const removed = opts.init ? unlockDead(lock) : withFileLock(initLockFile(ctx.cwd), () => unlockDead(lock), INIT_LOCK);
-  out(ctx, `removed ${lock}: it held ${JSON.stringify(removed.text.trim())} (process ${removed.pid} on this host, which is gone)`, { removed: lock, contents: removed.text });
+  const marker = path.join(runsRoot(ctx.cwd), ".unlock.lock");
+  const refuse = (_seen, described) => `another crossfire unlock is running, or one crashed: ${described}; nothing was removed. If no crossfire unlock is running, a person can delete ${marker}; nothing clears it automatically`;
+  const removed = withFileLock(marker, () => unlockDead(lock), { refuse });
+  const what = removed.parsed ? `process ${removed.pid} on this host, which is gone` : `unreadable, ${ageText(removed.ageMs)} old`;
+  out(ctx, `removed ${lock}: it held ${JSON.stringify(removed.text.trim())} (${what})`, { removed: lock, contents: removed.text });
   return EXIT.OK;
 }
 

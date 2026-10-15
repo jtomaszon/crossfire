@@ -65,21 +65,21 @@ export function atomicWriteText(file, text) {
 const sleepMs = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
 /**
- * Run `fn` holding `lock`: a file created exclusively (`wx`) with `<pid> <hostname>` and the time.
+ * Run `fn` holding `lock`: a file created exclusively (`tryCreate`) with `<pid> <hostname>` and the time.
  * It is held while its process is alive on this host, however old; a live holder is waited for up to
  * `waitMs`. Nothing takes a lock over: one whose process is gone, from another host or unreadable is
  * refused, naming `unlock`. The holder removes it only while it still holds the content it wrote.
  */
-export function withFileLock(lock, fn, { waitMs = 0, busy = `${lock} is held`, unlock = "crossfire unlock" } = {}) {
+export function withFileLock(lock, fn, { waitMs = 0, busy = `${lock} is held`, unlock = "crossfire unlock", refuse = null } = {}) {
   fs.mkdirSync(path.dirname(lock), { recursive: true });
   const mine = `${process.pid} ${os.hostname()}\n${new Date().toISOString()}\n`;
   const deadline = Date.now() + waitMs;
-  while (!createExclusive(lock, mine)) {
-    let seen = readLock(lock);
-    for (let i = 0; seen && !seen.parsed && i < 20; i += 1) seen = (sleepMs(50), readLock(lock)); // a lock being created is empty for an instant
+  while (!tryCreate(lock, mine)) {
+    const seen = readLock(lock); // never empty: a lock is created with its contents already in it
     if (!seen) continue; // released in between
+    if (refuse) throw new CrossfireError(refuse(seen, describeLock(seen)), EXIT.ENVIRONMENT);
     if (!seen.alive || Date.now() >= deadline) {
-      const fix = seen.alive ? `wait for it; if that process is stuck, stop it, then the person runs ${unlock}` : seen.here ? `nothing takes a lock over: if the person confirms no crossfire command is running, run ${unlock}` : `nothing takes a lock over, and ${unlock} removes only the lock of a gone process on this host: the person checks no crossfire command uses it and deletes ${lock} by hand`;
+      const fix = seen.alive ? `wait for it; if that process is stuck, stop it, then the person runs ${unlock}` : seen.here ? `nothing takes a lock over: if the person confirms no crossfire command is running, run ${unlock}` : !seen.parsed ? `nothing takes a lock over: if the person confirms no crossfire command is running, run ${unlock} (it removes an unreadable lock older than 60 seconds)` : `nothing takes a lock over, and ${unlock} removes only the lock of a gone process on this host: the person checks no crossfire command uses it and deletes ${lock} by hand`;
       throw new CrossfireError(`${busy}: ${describeLock(seen)}; ${fix}`, EXIT.ENVIRONMENT);
     }
     sleepMs(50);
@@ -128,32 +128,39 @@ function describeLock(seen) {
   return `${seen.file} (contents ${JSON.stringify(seen.text.trim())}, ${ageText(seen.ageMs)} old); ${why}`;
 }
 
-/** Remove `lock` only if it is still `judged` and that is the lock of a gone process on this host; returns it. */
+/** An unreadable lock (not `<pid> <hostname>`) older than this may be removed by unlock; a younger one may be a writer from before 1.5. */
+export const UNREADABLE_LOCK_MS = 60_000;
+
+/**
+ * Remove `lock` only if it is still `judged` (same full contents) and that is the lock of a gone process
+ * on this host, or an unreadable lock older than 60 seconds; returns it. The caller holds the unlock marker.
+ */
 export function unlockDead(lock, judged = readLock(lock)) {
   if (!judged) throw new CrossfireError(`no lock at ${lock}; nothing was removed`);
-  if (!judged.here || judged.alive) throw new CrossfireError(`${describeLock(judged)}; crossfire unlock removes only the lock of a gone process on this host; nothing was removed`);
+  const removable = (judged.here && !judged.alive) || (!judged.parsed && judged.ageMs > UNREADABLE_LOCK_MS);
+  if (!removable) throw new CrossfireError(`${describeLock(judged)}; crossfire unlock removes only the lock of a gone process on this host, or an unreadable one older than 60 seconds; nothing was removed`);
   if (readLock(lock)?.text !== judged.text) throw new CrossfireError(`${lock} changed after it was judged; nothing was removed`);
   fs.rmSync(lock, { force: true });
   return judged;
 }
 
-function createExclusive(file, text) {
-  let fd;
+/**
+ * Create `file` holding `content`, atomically: it never exists empty or half-written. A uniquely named
+ * temporary file next to it is written, then linked to `file` (which fails if it exists), then removed.
+ * Returns false when `file` exists; any other error is thrown.
+ */
+export function tryCreate(file, content) {
+  const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
   try {
-    fd = fs.openSync(file, "wx");
+    fs.writeFileSync(tmp, content);
+    fs.linkSync(tmp, file);
+    return true;
   } catch (e) {
     if (e.code === "EEXIST") return false;
     throw e;
-  }
-  try {
-    fs.writeSync(fd, text);
-  } catch (e) {
-    fs.rmSync(file, { force: true }); // ours, created a moment ago
-    throw e;
   } finally {
-    fs.closeSync(fd);
+    fs.rmSync(tmp, { force: true });
   }
-  return true;
 }
 
 export function writeText(file, text) {
