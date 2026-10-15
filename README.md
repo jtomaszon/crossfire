@@ -202,6 +202,7 @@ Crossfire runs one change per loop. Running many at once is a plan, not a defaul
 
 ## Known issues
 
+- **`crossfire spec-review` and a concurrent local process.** spec-review refuses to write its review documents through a symlink, including a symlinked `.crossfire` or `.crossfire/specs`, and replaces files without following one. Another process running on the same machine at the same moment could still swap one of those directories for a symlink between the check and the write. Closing that needs no-follow directory handles that Node does not provide; a process able to do that already has easier ways in.
 - **Watch lock takeover under a long pause.** One watcher per PR is enforced with a lock file and a takeover protocol for stale locks. If a watcher is suspended for more than 10 seconds in the middle of taking over a stale lock, a second watcher can take it too (found by a crossfire review, reproduced in simulation). It needs a stale lock, two watchers started for the same PR, and a pause at that instant. An OS-backed exclusive lock would remove it.
 
 ## Develop
