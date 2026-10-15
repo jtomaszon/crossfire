@@ -149,13 +149,13 @@ function emitNext(ctx, dir, state, extra = []) {
   if (next.action === ACTIONS.SEND_BUILDER) {
     const brief = files.brief(dir, state.round, next.brief);
     const result = files.result(dir, state.round, next.brief);
-    if (!fs.existsSync(brief)) writeText(brief, renderBrief(state, { resultFile: result, branch: git.branch(state.repo), failures: next.failures, lessons: lessonsBlock(state.repo), precedents: precedentsBlock(state.repo) }));
+    if (!fs.existsSync(brief)) writeText(brief, renderBrief(state, { resultFile: result, branch: git.branch(state.repo), failures: next.failures, specFile: specPointer(dir, state), lessons: lessonsBlock(state.repo), precedents: precedentsBlock(state.repo) }));
     lines.push(`NEXT ACTION: SEND_BUILDER (${next.brief})`, `BRIEF: ${brief}`, `RESULT FILE: ${result}`, `THEN: crossfire built --slug ${state.slug}`);
     Object.assign(data, { brief, resultFile: result, then: `crossfire built --slug ${state.slug}` });
   } else if (next.action === ACTIONS.SEND_BREAKER) {
     const brief = files.breakerBrief(dir, state.round);
     const result = files.breakerResult(dir, state.round);
-    if (!fs.existsSync(brief)) writeText(brief, renderBreakerBrief(state, { resultFile: result, branch: git.branch(state.repo), head: git.head(state.repo), lessons: lessonsBlock(state.repo), precedents: precedentsBlock(state.repo) }));
+    if (!fs.existsSync(brief)) writeText(brief, renderBreakerBrief(state, { resultFile: result, branch: git.branch(state.repo), head: git.head(state.repo), specFile: specPointer(dir, state), lessons: lessonsBlock(state.repo), precedents: precedentsBlock(state.repo) }));
     lines.push("NEXT ACTION: SEND_BREAKER", `BRIEF: ${brief}`, `RESULT FILE: ${result}`, `THEN: crossfire attacked --slug ${state.slug}`);
     Object.assign(data, { brief, resultFile: result, then: `crossfire attacked --slug ${state.slug}` });
   } else if (next.action === ACTIONS.RUN_REVIEW) {
@@ -434,6 +434,9 @@ function init(ctx, opts) {
     const snapshot = files.specSnapshot(dir);
     fs.writeFileSync(snapshot, specBytes);
     state.specSnapshot = { file: snapshot, sha256: sha256(specBytes) };
+    const anchor = specAnchorFile(repo, dir);
+    fs.mkdirSync(path.dirname(anchor), { recursive: true });
+    fs.writeFileSync(anchor, `${state.specSnapshot.sha256}\n`);
     // 1.4: the settings this loop decided, read from state from now on (a loop without policy is a 1.3 loop).
     state.policy = 2;
     state.decided = decided;
@@ -516,10 +519,20 @@ function withSpecWorktree(repo, baseSha, slug, specBytes, planBytes, fn) {
     const add = g(repo, ["worktree", "add", "-q", "-b", branch, wt, baseSha]);
     if (add.status !== 0) throw new CrossfireError(`could not create the spec review worktree: ${firstLine(add)}`, EXIT.ENVIRONMENT);
     added = true;
+    // Write only to paths crossfire creates here itself: anything the base already has at this path
+    // (a symlink out of the worktree, a file, a directory) is refused before a byte is written.
     const dir = path.join(wt, SPEC_REVIEW_DIR);
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, `${slug}.md`), specBytes);
-    if (planBytes) fs.writeFileSync(path.join(dir, `${slug}.plan.md`), planBytes);
+    let there = true;
+    try {
+      fs.lstatSync(dir);
+    } catch (e) {
+      if (e.code !== "ENOENT") throw e;
+      there = false;
+    }
+    if (there) throw new CrossfireError(`${SPEC_REVIEW_DIR} already exists on the base (${baseSha.slice(0, 12)}); crossfire writes the spec there only when it creates the directory itself. Remove it from the base, or review against another --base.`, EXIT.ENVIRONMENT);
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, `${slug}.md`), specBytes, { flag: "wx" });
+    if (planBytes) fs.writeFileSync(path.join(dir, `${slug}.plan.md`), planBytes, { flag: "wx" });
     const stage = g(wt, ["add", "-f", "--", SPEC_REVIEW_DIR]);
     if (stage.status !== 0) throw new CrossfireError(`could not stage the spec in the review worktree: ${firstLine(stage)}`, EXIT.ENVIRONMENT);
     const commit = g(wt, ["-c", "user.name=crossfire", "-c", "user.email=crossfire@localhost", "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", `crossfire spec review: ${slug}`]);
@@ -645,12 +658,42 @@ function envFailureText(failures) {
 }
 
 /**
- * The spec as approved at init: its snapshot, checked against the sha256 recorded then. Null for a
- * loop started before 1.4 (no snapshot). A snapshot that is gone or changed throws (fail closed).
+ * Where init records the approved spec's sha256 for a loop: in the git common dir, outside the run
+ * directory (whose state.json and snapshot sit beside the builder's result file).
  */
-function approvedSpec(state) {
-  if (!state.specSnapshot) return null;
-  const { file, sha256: want } = state.specSnapshot;
+function specAnchorFile(repo, dir) {
+  return path.join(git.gitCommonDir(repo), "crossfire", "approved-specs", `${sha256(path.resolve(dir)).slice(0, 32)}.sha256`);
+}
+
+/** The recorded sha256, or null when there is no record; an unreadable record throws (fail closed). */
+function readSpecAnchor(repo, dir) {
+  const file = specAnchorFile(repo, dir);
+  try {
+    return fs.readFileSync(file, "utf8").trim();
+  } catch (e) {
+    if (e.code === "ENOENT") return null;
+    throw new CrossfireError(`could not read the record of the spec approved at init (${file}): ${e.message}`);
+  }
+}
+
+/** A 1.4 loop is bound to its approved spec: its anchor exists, or its state says it is a 1.4 loop. */
+function specBound(dir, state) {
+  return readSpecAnchor(state.repo, dir) !== null || state.policy != null || state.specSnapshot != null || state.decided != null;
+}
+
+/**
+ * The spec as approved at init: the run directory's snapshot, checked against the sha256 recorded
+ * outside the run directory then. Null only for a loop started before 1.4 (no record and no 1.4
+ * state). A record that is missing, or a snapshot that is gone or changed, throws (fail closed); it
+ * never falls back to the spec file, which the builder can write.
+ */
+function approvedSpec(dir, state) {
+  const want = readSpecAnchor(state.repo, dir);
+  if (want === null) {
+    if (!specBound(dir, state)) return null;
+    throw new CrossfireError(`the record of the spec approved at init (${specAnchorFile(state.repo, dir)}) is missing; nothing is judged against a spec that cannot be checked. Start a new loop from the spec (crossfire init --force, or crossfire respec).`);
+  }
+  const file = files.specSnapshot(dir);
   let bytes;
   try {
     bytes = fs.readFileSync(file);
@@ -659,6 +702,11 @@ function approvedSpec(state) {
   }
   if (!bytes || sha256(bytes) !== want) throw new CrossfireError(`the spec as approved at init (${file}) is missing or no longer matches the sha256 recorded then; nothing is judged against a changed spec. Restore it, or start a new loop from the revised spec (crossfire respec).`);
   return bytes.toString("utf8");
+}
+
+/** The spec file every brief and reviewer focus names: the approved snapshot for a 1.4 loop. */
+function specPointer(dir, state) {
+  return specBound(dir, state) ? files.specSnapshot(dir) : state.spec;
 }
 
 function built(ctx, opts) {
@@ -688,19 +736,19 @@ function built(ctx, opts) {
         dirty: git.dirtyPaths(state.repo),
         ahead: git.commitsAhead(state.repo, state.baseSha),
       });
-      // The builder never weakens tests: read from the branch itself, not from the result.
-      if (!problems.length && result.status === "DONE") {
-        // Exemptions come from the spec as approved at init, never from the file as it is now. A loop
-        // without a snapshot (started before 1.4) has none.
-        let specText = "";
-        try {
-          specText = approvedSpec(state) ?? "";
-        } catch (e) {
-          problems = [e.message];
-        }
-        if (!problems.length) problems = testChanges(state.repo, state.baseSha, specText).problems.map((p) => `weakens tests: ${p} (existing test files are not changed unless the spec allows it; add new tests in new files; a file the "## Allowed test changes" section of the spec as approved at init names is exempt)`);
-      }
     }
+    // The builder never weakens tests, whatever status it reports: read from the branch itself, not
+    // from the result. Exemptions come from the spec as approved at init, never from the file as it
+    // is now; a loop started before 1.4 has none.
+    let specText = "";
+    let bound = true;
+    try {
+      specText = approvedSpec(dir, state) ?? "";
+    } catch (e) {
+      problems.push(e.message);
+      bound = false;
+    }
+    if (bound) problems.push(...testChanges(state.repo, state.baseSha, specText).problems.map((p) => `weakens tests: ${p} (existing test files are not changed unless the spec allows it; add new tests in new files; a file the "## Allowed test changes" section of the spec as approved at init names is exempt)`));
     if (problems.length) {
       const esc = noteMalformed(state, key, problems.join("; "), at);
       saveState(dir, state);
@@ -1179,7 +1227,8 @@ function review(ctx, opts) {
     const reviewers = [plugins.codex, ...(grokPlan.run ? [plugins.grok] : [])];
     const size = diffSize(state.repo, state.baseSha);
     const tooBig = sizeWarning(size);
-    const focus = buildFocus(state, { specText: approvedSpec(state) ?? readSpec(state.spec), precedents: readPrecedents(state.repo) });
+    const approved = approvedSpec(dir, state);
+    const focus = buildFocus(state, { specText: approved ?? readSpec(state.spec), specFile: approved === null ? state.spec : files.specSnapshot(dir), precedents: readPrecedents(state.repo) });
     const results = reviewers.map((p) => runReviewer(p, { cwd: state.repo, base: state.baseSha, focus, timeoutMs }));
     const at = nowIso(); // the timeline records when the reviews finished, not when they started
 

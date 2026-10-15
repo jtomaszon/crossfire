@@ -10,7 +10,7 @@ import { precedentsFocus } from "./precedents.mjs";
 const SPEC_MAX_CHARS = 12_000;
 
 /** The focus text both reviewers receive on top of their own adversarial framing. */
-export function buildFocus(state, { specText, precedents = [] }) {
+export function buildFocus(state, { specText, specFile = state.spec, precedents = [] }) {
   const ledger = state.ledger.filter((e) => e.status !== "open" && e.source !== "breaker");
   const internal = state.ledger.filter((e) => e.source === "breaker");
   const lines = [
@@ -34,7 +34,7 @@ export function buildFocus(state, { specText, precedents = [] }) {
     );
   }
   lines.push(...precedentsFocus(precedents));
-  const spec = specText.length > SPEC_MAX_CHARS ? `${specText.slice(0, SPEC_MAX_CHARS)}\n[spec truncated; full text at ${state.spec}]` : specText;
+  const spec = specText.length > SPEC_MAX_CHARS ? `${specText.slice(0, SPEC_MAX_CHARS)}\n[spec truncated; full text at ${specFile}]` : specText;
   lines.push("", "SPEC:", spec);
   return lines.join("\n");
 }

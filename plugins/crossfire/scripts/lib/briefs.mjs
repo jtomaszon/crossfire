@@ -101,7 +101,7 @@ export const FAILURE_CATEGORIES = [
   "the boundaries the spec names: limits, permissions, time, money, external services failing",
 ];
 
-export function renderBrief(state, { resultFile, branch, failures, lessons = [], precedents = [] }) {
+export function renderBrief(state, { resultFile, branch, failures, lessons = [], precedents = [], specFile = state.spec }) {
   const owed = itemsOwed(state);
   const kind = state.next.brief;
   const title = {
@@ -116,7 +116,7 @@ export function renderBrief(state, { resultFile, branch, failures, lessons = [],
     `# Crossfire builder brief: ${state.slug}, round ${state.round - (state.roundOffset ?? 0)} of ${state.maxRounds}: ${title}`,
     "",
     "## Read first",
-    `- The spec: \`${state.spec}\` (read all of it; it is the contract).`,
+    `- The spec: \`${specFile}\` (read all of it; it is the contract).`,
     ...(state.plan ? [`- The plan: \`${state.plan}\` (its tasks, the exact files each one touches, and its Review Focus: write those tests first).`] : []),
     `- Repository: \`${state.repo}\`, branch \`${branch ?? "current"}\`, compared against \`${state.base}\`.`,
     "- Any document the spec names, by the absolute path it gives.",
@@ -272,7 +272,7 @@ export function validateHandoff(handoff) {
 
 // ---- breaker ---------------------------------------------------------------
 
-export function renderBreakerBrief(state, { resultFile, branch, head, lessons = [], precedents = [] }) {
+export function renderBreakerBrief(state, { resultFile, branch, head, lessons = [], precedents = [], specFile = state.spec }) {
   const earlier = state.ledger.filter((e) => e.source !== "breaker");
   const out = [
     `# Crossfire breaker brief: ${state.slug}, round ${state.round}`,
@@ -280,7 +280,7 @@ export function renderBreakerBrief(state, { resultFile, branch, head, lessons = 
     "You are the **breaker**. A builder just finished this round and its proof commands pass. Independent reviewers from another vendor will review the branch next. Your job is to find what they would find, first: **assume the change is wrong and prove it.**",
     "",
     "## What to read",
-    `- The spec: \`${state.spec}\` (its acceptance criteria and its "How this could fail" section).`,
+    `- The spec: \`${specFile}\` (its acceptance criteria and its "How this could fail" section).`,
     `- The change: \`git diff ${state.baseSha}...HEAD\` in \`${state.repo}\` (branch \`${branch ?? "current"}\`, HEAD \`${head}\`). Read every changed file in full, and the code it calls and that calls it.`,
     ...(state.plan ? [`- The plan: \`${state.plan}\` (its Review Focus lists the failure modes the planner expected).`] : []),
     "- Do not read the builder's notes or result files: review the code cold.",

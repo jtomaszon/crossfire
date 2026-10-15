@@ -132,7 +132,9 @@ export function testChanges(repo, baseSha, specText) {
     const oldTest = Boolean(e.old) && e.status !== "A" && e.status !== "C" && isTestFile(e.old);
     const newTest = Boolean(e.new) && isTestFile(e.new);
     if (!oldTest && !newTest) continue;
-    if (allowed.has(e.old) || allowed.has(e.new)) continue;
+    // Naming an existing path exempts its change; naming a new path only skips the new-file scan,
+    // never a rename or delete of a different existing test file.
+    if (oldTest && allowed.has(e.old)) continue;
     if (oldTest) {
       // An existing test file: not deleted, not renamed away, not changed in any byte.
       if (e.status === "D") {
@@ -167,6 +169,7 @@ export function testChanges(repo, baseSha, specText) {
     }
     // A new test file (added, or renamed or copied from a file that was not a test file): every
     // line in it is new as test code, so none may skip or focus tests.
+    if (allowed.has(e.new)) continue;
     const shown = git(repo, ["show", `HEAD:${e.new}`]);
     if (shown.status !== 0) {
       problems.push(`${e.new}: could not read it to check for skip or focus calls (${firstLine(shown)})`);
