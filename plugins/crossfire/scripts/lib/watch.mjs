@@ -8,7 +8,7 @@
 // never wake (crossfire's own, or from people not on --from) are acknowledged at once.
 import fs from "node:fs";
 import path from "node:path";
-import { run, atomicWriteJson, readJsonFile, nowIso } from "./util.mjs";
+import { run, atomicWriteJson, readJsonFile, nowIso, tryCreate as createAtomically } from "./util.mjs";
 
 /** Marker crossfire puts in every comment it posts, so its own comments never wake a watcher. */
 export const COMMENT_MARKER = "<!-- crossfire -->";
@@ -193,17 +193,12 @@ function pidAlive(pid) {
   }
 }
 
-/** Create `file` holding `content`, atomically: it never exists empty or half-written. */
+/** The shared atomic create (util.mjs); here any error counts as not created, as before. */
 function tryCreate(file, content) {
-  const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
   try {
-    fs.writeFileSync(tmp, content);
-    fs.linkSync(tmp, file); // fails with EEXIST when someone holds it
-    return true;
+    return createAtomically(file, content);
   } catch {
     return false;
-  } finally {
-    fs.rmSync(tmp, { force: true });
   }
 }
 

@@ -414,7 +414,18 @@ test("AC-9: built refuses a branch that removes a test line, listing file and li
   assert.match(r.stdout, /tests\/app\.test\.mjs:2: removes a line from an existing test file: "  assert\.equal\(1, 1\);"/);
   // A spec that allows the file when the loop starts lets it shrink.
   fs.appendFileSync(sb.spec, "\n## Allowed test changes\n\n- `tests/app.test.mjs`: the assertion moved to the new suite\n");
-  const again = sb.cf("init", "--slug", "demo", "--spec", sb.spec, "--base", "main", "--breaker", "off", "--force", "--json").json();
+  // 1.5 (AC-3): --force does not restart a loop that has recorded steps since its init; it ends first.
+  r = sb.cf("init", "--slug", "demo", "--spec", sb.spec, "--base", "main", "--breaker", "off", "--force");
+  assert.equal(r.status, 2, r.stdout);
+  assert.match(r.stderr, /has recorded steps since its init/);
+  const stateFile = `${sb.repo}/.crossfire/runs/demo/state.json`;
+  const st = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+  const old = new Date(Date.now() - 4 * 3600 * 1000).toISOString();
+  st.startedAt = old;
+  for (const h of st.history) h.at = old;
+  fs.writeFileSync(stateFile, JSON.stringify(st));
+  assert.equal(sb.cf("abandon", "--slug", "demo").status, 0);
+  const again = sb.cf("init", "--slug", "demo", "--spec", sb.spec, "--base", "main", "--breaker", "off", "--json").json();
   sb.build(again.resultFile);
   r = sb.cf("built", "--slug", "demo", "--json");
   assert.equal(r.status, 0, r.stdout);

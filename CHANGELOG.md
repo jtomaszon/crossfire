@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.5.0
+
+Loops that cannot step on each other. Two loops in one checkout committed to the same branch and each loop's reviewers saw the other's commits.
+
+- **One active loop per checkout.** `crossfire init` refuses, changing nothing, while a loop with another slug is active in the checkout. It names that loop and how long ago its last step was, and prints the commands to start the new loop in a worktree of its own, runnable as printed: `git worktree add ../<repo>-<slug> <slug>` (or `-b <slug> <base>` when there is no such branch), `mkdir -p` and `cp` of `.crossfire/specs/<slug>.*` into it, then `cd` and the init line pointing at the copies. With `--from-check`, it says the check belongs to this checkout. The decision and the new loop's state are made under one checkout-wide lock, `.crossfire/runs/.init.lock`. There is no flag to skip it.
+- **`init --force` keeps recorded work.** It archives and restarts only a loop that finished or has recorded nothing since its init (a bare or `--from-check` init); a loop with recorded steps is refused with the worktree commands.
+- **`crossfire abandon --slug <slug>`:** the person ends a loop that looks stuck (active, no crossfire command holding its lock, no step for 3 hours). It re-checks under the loop's lock and escalates at gate `ABANDONED` with the reason `no step since <time> (<N> h <M> min ago); abandoned by the person`. Nothing ends a loop automatically.
+- **Locks held while their process is alive.** A loop's lock and the init lock are files created exclusively with `<pid> <hostname>` and the time. A lock is held while its process is alive on this host, however old it is: a long `built` or `review` never loses its lock, so `abandon` cannot run under it. The init lock waits up to 10 seconds for a live holder. Nothing takes a lock over: a lock whose process is gone (or written on another host, or unreadable) is refused with a message naming the file, its contents, its age and the command to clear it.
+- **`crossfire unlock --slug <slug>` and `crossfire unlock --init`:** the person removes a lock left by a crossfire process on this host that is gone; it prints what it removed and refuses (changing nothing) a lock whose process runs, one from another host or one it cannot read that is under 60 seconds old.
+- **One unlock at a time, locks never empty, health advisory.** Each unlock holds `.crossfire/runs/.unlock.lock` and refuses, changing nothing, while another unlock holds it; a marker left by a crashed unlock is named (file, process, age) and only a person deletes it. Locks are created with their contents already in them (a temporary file linked into place), and an unreadable lock older than 60 seconds can be removed with `unlock`. A malformed reviewer health file is read as if its invalid entries were not there, so it never aborts doctor, spec-review, check or a loop step.
+- The memory file, the reviewer health file and the precedents file keep their 1.4.0 behaviour, with no lock: concurrent updates to them from loops running at the same moment are best effort.
+
 ## 1.4.0
 
 Prove the spec, code once. Measured on 26 real loops and 8 checks: the first review pass found 74% of all findings and pass 3 or later found none; Grok found findings no one else did where its sandbox works, and on a host where it fails, crossfire kept calling it; the breaker overlapped the reviewers most of the time, at about 6 minutes a round. So the cross-vendor attack moves to the cheapest point, the spec before any code exists, and the code reviews after it get lean.

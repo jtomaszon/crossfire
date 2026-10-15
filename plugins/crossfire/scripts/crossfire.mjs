@@ -6,21 +6,21 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as git from "./lib/git.mjs";
-import { ACTIONS, afterBreak, afterBuild, afterReview, collectFindings, compareWithPrevious, isTerminal, newState, noteMalformed } from "./lib/referee.mjs";
+import { ACTIONS, afterBreak, afterBuild, afterReview, collectFindings, compareWithPrevious, escalate, isTerminal, newState, noteMalformed } from "./lib/referee.mjs";
 import { renderBreakerBrief, renderBrief, validateBreakerResult, validateBuildResult } from "./lib/briefs.mjs";
 import { locatePlugins, readiness, usable, versionSkew, OFFICIAL } from "./lib/plugins.mjs";
 import { buildCheckFocus, buildFocus, readSpec, runReviewer } from "./lib/reviewers.mjs";
 import * as W from "./lib/watch.mjs";
-import { crossfireRoot, ensureExcluded, files, listRuns, loadState, runDir, saveState, withLock } from "./lib/store.mjs";
+import { crossfireRoot, ensureExcluded, files, listRuns, loadState, runDir, runsRoot, saveState, withLock } from "./lib/store.mjs";
 import { renderCheckReport, renderReport, settingsText, statusLine } from "./lib/report.mjs";
 import { appendLessons, lessonsBlock, lessonsFromCheck, lessonsFromLoop, memoryFile, readLessons } from "./lib/memory.mjs";
 import { autoSkip, classifyProofFailure, grokSocketHint, readHealth, recordAttempt, summarize } from "./lib/health.mjs";
 import { appendPrecedent, precedentsBlock, precedentsFile, readPrecedents } from "./lib/precedents.mjs";
 import { SPEC_REVIEW_DIR, buildSpecFocus, checkSpecReviewPaths, diffSize, readSpecReview, renderSpecReviewMd, riskHigh, sha256, sizeWarning, specReviewFiles, specReviewStatus, writeSpecReviewFile } from "./lib/specreview.mjs";
 import { testChanges } from "./lib/testguard.mjs";
-import { CrossfireError, EXIT, atomicWriteJson, minutesBetween, nowIso, readJsonFile, run, runShell, tail, writeText } from "./lib/util.mjs";
+import { CrossfireError, EXIT, ageText, atomicWriteJson, minutesBetween, nowIso, readJsonFile, readLock, run, runShell, tail, unlockDead, withFileLock, writeText } from "./lib/util.mjs";
 
-const VERSION = "1.4.0";
+const VERSION = "1.5.0";
 
 const USAGE = `crossfire ${VERSION}: referee for a spec-first build -> review -> fix loop
 
@@ -54,6 +54,8 @@ Usage:
                                        with a current spec review (lean): grok auto = first code pass only,
                                        breaker off (on with **Risk:** high), max-rounds 2; without one:
                                        grok every pass, breaker on, max-rounds 3. Flags always win.
+                                       one active loop per checkout; --force restarts only a loop that
+                                       finished or has recorded nothing since its init
   crossfire built --slug <slug>        record the builder's result file, run the proof commands (G0)
   crossfire attacked --slug <slug>     record the breaker's result (proven attacks get one harden round)
   crossfire proof --slug <slug> [--e2e <cmd>]... [--invariant <cmd>]...
@@ -61,6 +63,10 @@ Usage:
   crossfire review --slug <slug> [--timeout-min 20]
                                        run Codex (required) and Grok Build (optional), record findings
   crossfire status [--slug <slug>]     where a loop is, and its next action
+  crossfire abandon --slug <slug>      end a loop with no step for 3 hours (only on the person's own words)
+  crossfire unlock (--slug <slug> | --init)
+                                       remove a loop's lock, or the checkout's init lock, left by a process on
+                                       this host that is gone (only on the person's own words)
   crossfire report --slug <slug>       print the ship or escalation report
   crossfire ladder --slug <slug> [--remote origin] [--branch <name>] [--repo OWNER/NAME]
                                        after SHIP: pushed, PR, CI, merged, as facts (reads only)
@@ -71,7 +77,7 @@ Exit codes: 0 ok, 2 usage, 3 malformed (re-ask, nothing advanced), 4 loop alread
 
 function parseArgs(argv) {
   const repeat = new Set(["e2e", "invariant", "from", "ack"]);
-  const bool = new Set(["json", "force", "help", "no-preflight", "no-failure-modes", "reset-cursor", "ack-only", "version"]);
+  const bool = new Set(["json", "force", "init", "help", "no-preflight", "no-failure-modes", "reset-cursor", "ack-only", "version"]);
   const opts = { e2e: [], invariant: [], from: [], ack: [] };
   const pos = [];
   for (let i = 0; i < argv.length; i += 1) {
@@ -367,6 +373,12 @@ function init(ctx, opts) {
     }
   }
 
+  const dir = runDir(ctx.cwd, slug);
+  const help = () => worktreeHelp(repo, { slug, base, opts, spec, plan, fromCheck });
+  // Checked now so a refused init costs no preflight, and again under the locks before anything is written.
+  refuseOtherLoop(repo, slug, help);
+  sameSlugGuard(dir, slug, opts, help);
+
   const plugins = locatePlugins();
   if (!usable(plugins.codex)) {
     throw new CrossfireError(`the Codex reviewer is required and not usable: ${plugins.codex.problems.join("; ") || "codex@openai-codex is not installed"}. Run \`crossfire doctor\`.`, EXIT.ENVIRONMENT);
@@ -405,11 +417,13 @@ function init(ctx, opts) {
   decided.maxRoundsFrom = opts["max-rounds"] !== undefined ? "--max-rounds" : lean ? "lean default" : "no current spec review";
 
   ensureExcluded(repo);
-  const dir = runDir(ctx.cwd, slug);
-  return withLock(dir, () => {
-    if (fs.existsSync(files.state(dir))) {
-      const old = loadState(dir);
-      if (!isTerminal(old) && !opts.force) throw new CrossfireError(`loop ${slug} is still running (${old.phase}); pass --force to archive it and start over`);
+  // One checkout-wide lock: deciding that no other loop is active and creating this one's state are one step.
+  return withFileLock(initLockFile(repo), () => {
+    refuseOtherLoop(repo, slug, help);
+    return withLock(dir, () => initLocked());
+  }, INIT_LOCK);
+  function initLocked() {
+    if (sameSlugGuard(dir, slug, opts, help)) {
       const archived = `${dir}.archived-${nowIso().replace(/[:.]/g, "")}`;
       fs.mkdirSync(archived, { recursive: true });
       for (const f of fs.readdirSync(dir)) if (f !== ".lock") fs.renameSync(path.join(dir, f), path.join(archived, f));
@@ -459,6 +473,7 @@ function init(ctx, opts) {
       state.history.push({ at: state.startedAt, event: "from-check", detail: `${fromCheck.id}: ${fromCheck.findings.length} finding(s) at ${fromCheck.head.slice(0, 12)}` });
       afterReview(state, fromCheck.reviews, { at: state.startedAt, minutesElapsed: 0 });
     }
+    state.initEvents = state.history.length; // 1.5: equal to history.length while the loop has recorded nothing since init
     saveState(dir, state);
     const skew = versionSkew(VERSION, plugins.installedSelf);
     const proofCount = state.e2e.length + state.invariants.length;
@@ -475,6 +490,121 @@ function init(ctx, opts) {
       "AGENTS: this loop needs 2 concurrent agents: you, and one builder or breaker at a time. With a cap of N concurrent agents, run at most N/2 loops at once.",
       ...(skew ? [`WARNING: ${skew}`] : []),
     ]);
+    return EXIT.OK;
+  }
+}
+
+// ---- one active loop per checkout (1.5) -------------------------------------
+
+const STUCK_MS = 3 * 60 * 60 * 1000;
+
+function lastStepAt(state) {
+  const times = [state.startedAt, ...(state.history ?? []).map((h) => h.at)].map((t) => Date.parse(t)).filter(Number.isFinite);
+  return Math.max(...times);
+}
+
+/** Active, no running crossfire command holds its lock, and no step for 3 hours. */
+function looksStuck(dir, state, now = Date.now()) {
+  if (isTerminal(state)) return false;
+  if (readLock(files.lock(dir))?.alive) return false;
+  return now - lastStepAt(state) >= STUCK_MS;
+}
+
+function shq(s) {
+  return /^[\w@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, "'\\''")}'`;
+}
+
+/** The commands that start this loop in a worktree of its own, runnable as printed. */
+function worktreeHelp(repo, { slug, base, opts, spec, plan, fromCheck }) {
+  if (fromCheck) return [`Check ${fromCheck.id} belongs to this checkout: check the pull request out in a worktree of its own, run crossfire check there again, and start the loop there with --from-check <that check>.`];
+  const target = `../${path.basename(repo)}-${slug}`;
+  const specsDir = path.join(crossfireRoot(repo), "specs");
+  const copies = fs.existsSync(specsDir) && fs.readdirSync(specsDir).some((f) => f.startsWith(`${slug}.`));
+  const where = (p) => (copies && fs.realpathSync(path.dirname(p)) === fs.realpathSync(specsDir) && path.basename(p).startsWith(`${slug}.`) ? `.crossfire/specs/${path.basename(p)}` : p);
+  const args = ["crossfire", "init", "--slug", slug, "--spec", where(spec), ...(plan ? ["--plan", where(plan)] : [])];
+  for (const [k, v] of Object.entries(opts)) {
+    if (["slug", "spec", "plan", "force", "cwd", "json", "from-check"].includes(k)) continue;
+    for (const one of [v].flat()) args.push(...(one === true ? [`--${k}`] : [`--${k}`, String(one)]));
+  }
+  const exists = Boolean(git.resolveRef(repo, `refs/heads/${slug}`));
+  // git refuses a worktree for a branch checked out elsewhere: print no command that cannot work.
+  const at = exists ? git.worktreeOf(repo, slug) : null;
+  if (at) {
+    const here = fs.realpathSync(at) === fs.realpathSync(repo);
+    return [here ? `the loop's branch ${slug} is already checked out at ${at} (this checkout), so no new worktree can use it: switch this checkout back to the branch it was on and run init again for the worktree commands, or pick another slug.` : `the loop's branch ${slug} is already checked out at ${at}; run crossfire init there, or pick another slug.`];
+  }
+  return [
+    "Start the new loop in a worktree of its own; run these as printed:",
+    `  cd ${shq(repo)}`,
+    `  git worktree add ${shq(target)} ${exists ? shq(slug) : `-b ${shq(slug)} ${shq(base)}`}`,
+    ...(copies ? [`  mkdir -p ${shq(target)}/.crossfire/specs`, `  cp .crossfire/specs/${slug}.* ${shq(target)}/.crossfire/specs/`] : []),
+    `  cd ${shq(target)}`,
+    `  ${args.map(shq).join(" ")}`,
+  ];
+}
+
+/** AC-1: refuse, changing nothing, when a loop with another slug is active in this checkout. */
+function refuseOtherLoop(repo, slug, help) {
+  const root = runsRoot(repo);
+  const now = Date.now();
+  const active = (fs.existsSync(root) ? fs.readdirSync(root) : [])
+    .filter((name) => name !== slug && fs.existsSync(path.join(root, name, "state.json")))
+    .map((name) => ({ dir: path.join(root, name), state: readJsonFile(path.join(root, name, "state.json")) }))
+    .filter(({ dir, state }) => state.slug === path.basename(dir) && !isTerminal(state)); // archives are not loops
+  if (!active.length) return;
+  const lines = active.map(({ dir, state }) => `  ${state.slug}: last step ${ageText(now - lastStepAt(state))} ago${looksStuck(dir, state, now) ? `; it looks stuck; if the person confirms, crossfire abandon --slug ${state.slug}` : ""}`);
+  throw new CrossfireError(["another loop is active in this checkout, and a checkout runs one loop at a time:", ...lines, ...help()].join("\n"));
+}
+
+/** AC-3: the existing loop with this slug, if it may be archived and restarted; throws when it may not. */
+function sameSlugGuard(dir, slug, opts, help) {
+  if (!fs.existsSync(files.state(dir))) return null;
+  const old = loadState(dir);
+  if (isTerminal(old)) return old;
+  const untouched = Number.isInteger(old.initEvents) && old.history.length === old.initEvents;
+  if (!opts.force) throw new CrossfireError(`loop ${slug} is still running (${old.phase})${untouched ? "; pass --force to archive it and start over" : ""}`);
+  if (!untouched) throw new CrossfireError([`loop ${slug} is still running (${old.phase}) and has recorded steps since its init (last step ${ageText(Date.now() - lastStepAt(old))} ago); --force restarts only a loop that finished or has recorded nothing since its init.`, ...help()].join("\n"));
+  return old;
+}
+
+// ---- locks ---------------------------------------------------------------
+
+const initLockFile = (cwd) => path.join(runsRoot(cwd), ".init.lock");
+const INIT_LOCK = { waitMs: 10_000, busy: "another crossfire init is running in this checkout", unlock: "crossfire unlock --init" };
+
+/**
+ * AC-3b: remove a lock left by a process on this host that is gone (or unreadable and older than 60 s);
+ * on the person's own words. One unlock at a time: each holds the checkout's unlock marker, so no new lock
+ * can appear at the target until this one unlock has removed the dead one. A marker left by a crashed
+ * unlock is refused, never cleared automatically.
+ */
+function unlockCmd(ctx, opts) {
+  if (Boolean(opts.init) === Boolean(opts.slug)) throw new CrossfireError("usage: crossfire unlock --slug <slug>, or crossfire unlock --init");
+  const lock = opts.init ? initLockFile(ctx.cwd) : files.lock(runDir(ctx.cwd, opts.slug));
+  if (!fs.existsSync(lock)) throw new CrossfireError(`no lock at ${lock}; nothing was removed`);
+  const marker = path.join(runsRoot(ctx.cwd), ".unlock.lock");
+  const refuse = (_seen, described) => `another crossfire unlock is running, or one crashed: ${described}; nothing was removed. If no crossfire unlock is running, a person can delete ${marker}; nothing clears it automatically`;
+  const removed = withFileLock(marker, () => unlockDead(lock), { refuse });
+  const what = removed.parsed ? `process ${removed.pid} on this host, which is gone` : `unreadable, ${ageText(removed.ageMs)} old`;
+  out(ctx, `removed ${lock}: it held ${JSON.stringify(removed.text.trim())} (${what})`, { removed: lock, contents: removed.text });
+  return EXIT.OK;
+}
+
+// ---- abandon -------------------------------------------------------------
+
+/** AC-2: end a loop that looks stuck, on the person's own words. Re-checked under the loop's lock. */
+function abandonCmd(ctx, opts) {
+  const { dir } = requireLoop(ctx.cwd, opts.slug);
+  return withLock(dir, () => {
+    const state = loadState(dir);
+    if (isTerminal(state)) throw new CrossfireError(`loop ${state.slug} already ${state.phase}; nothing to abandon`, EXIT.TERMINAL);
+    const last = lastStepAt(state);
+    const idle = Date.now() - last;
+    if (idle < STUCK_MS) throw new CrossfireError(`loop ${state.slug} does not look stuck: its last step was ${ageText(idle)} ago; only a loop with no step for 3 hours can be abandoned`);
+    escalate(state, nowIso(), "ABANDONED", `no step since ${new Date(last).toISOString()} (${ageText(idle)} ago); abandoned by the person`);
+    saveState(dir, state);
+    emitNext(ctx, dir, state);
+    if (!ctx.json) process.stdout.write(fs.readFileSync(files.report(dir), "utf8"));
     return EXIT.OK;
   });
 }
@@ -1544,7 +1674,7 @@ export function main(argv = process.argv.slice(2)) {
       process.stdout.write(`${USAGE}\n`);
       return cmd || opts.help ? EXIT.OK : EXIT.USAGE;
     }
-    const commands = { doctor: () => doctor(ctx), memory: () => memoryCmd(ctx), check: () => check(ctx, opts), checks: () => checks(ctx), watch: () => watch(ctx, opts), spec: () => specCmd(ctx, opts), proof: () => proof(ctx, opts), attacked: () => attacked(ctx, opts), init: () => init(ctx, opts), built: () => built(ctx, opts), review: () => review(ctx, opts), status: () => status(ctx, opts), report: () => report(ctx, opts), ladder: () => ladder(ctx, opts), respec: () => respec(ctx, opts), "spec-review": () => specReviewCmd(ctx, opts), precedent: () => precedentCmd(ctx, rest), precedents: () => precedentsCmd(ctx) };
+    const commands = { doctor: () => doctor(ctx), memory: () => memoryCmd(ctx), check: () => check(ctx, opts), checks: () => checks(ctx), watch: () => watch(ctx, opts), spec: () => specCmd(ctx, opts), proof: () => proof(ctx, opts), attacked: () => attacked(ctx, opts), init: () => init(ctx, opts), built: () => built(ctx, opts), review: () => review(ctx, opts), status: () => status(ctx, opts), abandon: () => abandonCmd(ctx, opts), unlock: () => unlockCmd(ctx, opts), report: () => report(ctx, opts), ladder: () => ladder(ctx, opts), respec: () => respec(ctx, opts), "spec-review": () => specReviewCmd(ctx, opts), precedent: () => precedentCmd(ctx, rest), precedents: () => precedentsCmd(ctx) };
     if (!commands[cmd]) throw new CrossfireError(`unknown command "${cmd}"\n\n${USAGE}`);
     return commands[cmd]();
   } catch (e) {

@@ -5,7 +5,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { gitCommonDir, repoRoot } from "./git.mjs";
-import { atomicWriteJson, readJsonFile, CrossfireError, EXIT, SLUG_RE } from "./util.mjs";
+import { atomicWriteText, readJsonFile, withFileLock, CrossfireError, EXIT, SLUG_RE } from "./util.mjs";
 
 export const EXCLUDE_LINE = "/.crossfire/";
 
@@ -45,32 +45,42 @@ export const files = {
   lock: (dir) => path.join(dir, ".lock"),
 };
 
+// The state.json text each state object was read from or last saved as: a command records only
+// over the state it read, never over one that changed under it (abandoned, restarted, archived).
+const readAs = new WeakMap();
+
 export function loadState(dir) {
   const file = files.state(dir);
   if (!fs.existsSync(file)) throw new CrossfireError(`no crossfire loop at ${dir}; start one with \`crossfire init\``);
-  return readJsonFile(file);
+  const text = fs.readFileSync(file, "utf8");
+  const state = JSON.parse(text);
+  readAs.set(state, text);
+  return state;
 }
 
 export function saveState(dir, state) {
-  atomicWriteJson(files.state(dir), state);
+  const file = files.state(dir);
+  if (readAs.has(state)) {
+    const now = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null;
+    if (now !== readAs.get(state)) {
+      let phase = "removed";
+      try {
+        phase = now === null ? phase : JSON.parse(now).phase;
+      } catch {
+        phase = "unreadable";
+      }
+      throw new CrossfireError(`the state of loop ${state.slug} changed while this command ran (now ${phase}); nothing was recorded. Run \`crossfire status --slug ${state.slug}\``, EXIT.TERMINAL);
+    }
+  }
+  const text = `${JSON.stringify(state, null, 2)}\n`;
+  atomicWriteText(file, text);
+  readAs.set(state, text);
 }
 
-/** One crossfire command per loop at a time. A lock older than 2 hours is stale. */
+/** One crossfire command per loop at a time: held while its process runs, never taken over. */
 export function withLock(dir, fn) {
   fs.mkdirSync(dir, { recursive: true });
-  const lock = files.lock(dir);
-  try {
-    fs.writeFileSync(lock, String(process.pid), { flag: "wx" });
-  } catch {
-    const age = Date.now() - fs.statSync(lock).mtimeMs;
-    if (age < 2 * 60 * 60 * 1000) throw new CrossfireError(`another crossfire command is running for this loop (${lock}); wait for it`, EXIT.ENVIRONMENT);
-    fs.writeFileSync(lock, String(process.pid));
-  }
-  try {
-    return fn();
-  } finally {
-    fs.rmSync(lock, { force: true });
-  }
+  return withFileLock(files.lock(dir), fn, { busy: "another crossfire command is running for this loop", unlock: `crossfire unlock --slug ${path.basename(dir)}` });
 }
 
 export function listRuns(cwd) {

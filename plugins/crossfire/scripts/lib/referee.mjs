@@ -85,7 +85,7 @@ function log(state, at, event, detail = "") {
   state.history.push({ at, event, detail });
 }
 
-function escalate(state, at, gate, reason, extra = {}) {
+export function escalate(state, at, gate, reason, extra = {}) {
   state.phase = "escalated";
   state.terminal = { kind: "escalated", gate, reason, at, ...extra };
   state.next = { action: ACTIONS.ESCALATE, gate, reason };

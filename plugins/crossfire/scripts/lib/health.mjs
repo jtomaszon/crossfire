@@ -17,21 +17,45 @@ export function healthFile(env = process.env) {
   return path.join(base, "crossfire", "reviewers.json");
 }
 
+/**
+ * The health file, normalized: an object of reviewer names to arrays of attempts, each an object with a
+ * boolean `ok` and a string `at`. Anything else (per reviewer, per entry) is dropped, so every consumer
+ * sees only valid entries; an unreadable file is `{}`.
+ */
 export function readHealth(file = healthFile()) {
+  let raw;
   try {
-    return JSON.parse(fs.readFileSync(file, "utf8"));
+    raw = JSON.parse(fs.readFileSync(file, "utf8"));
   } catch {
     return {};
   }
+  const health = {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return health;
+  for (const [reviewer, list] of Object.entries(raw)) {
+    if (reviewer === "__proto__" || !Array.isArray(list)) continue;
+    health[reviewer] = list
+      .filter((a) => a && typeof a === "object" && !Array.isArray(a) && typeof a.ok === "boolean" && typeof a.at === "string")
+      // Rebuild each entry from only the fields whose type is safe to keep: every optional field
+      // (error, seconds, and any future one) is normalized to its expected type or dropped, so a
+      // malformed value (an object, an array, NaN) never survives into a consumer that interpolates
+      // or arithmetic-ops it (e.g. doctor's `${h.lastError}`).
+      .map((a) => {
+        const entry = { ok: a.ok, at: a.at };
+        if (typeof a.seconds === "number" && Number.isFinite(a.seconds)) entry.seconds = a.seconds;
+        if (typeof a.error === "string") entry.error = a.error;
+        return entry;
+      });
+  }
+  return health;
 }
 
 /** Record one reviewer attempt. Errors are cut to one line; no code or findings are stored. */
 export function recordAttempt(reviewer, { ok, at, seconds, error }, file = healthFile()) {
-  const health = readHealth(file);
-  const list = health[reviewer] ?? [];
-  list.push({ ok, at, seconds, error: ok ? undefined : String(error ?? "").split("\n")[0].slice(0, 300) });
-  health[reviewer] = list.slice(-KEEP);
   try {
+    const health = readHealth(file);
+    const list = health[reviewer] ?? [];
+    list.push({ ok, at, seconds, error: ok ? undefined : String(error ?? "").split("\n")[0].slice(0, 300) });
+    health[reviewer] = list.slice(-KEEP);
     atomicWriteJson(file, health);
   } catch {
     /* health is advisory; never fail a review over it */
