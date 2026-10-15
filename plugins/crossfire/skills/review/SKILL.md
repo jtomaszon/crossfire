@@ -40,6 +40,11 @@ crossfire check --base origin/<base> --name pr-<n> \
 
 Pass `--spec <file>` too if the user gave one. Exit 3 means the Codex review failed: run it once more. Exit 5: a reviewer is not usable; show the message and stop.
 
+What the output can also say:
+- `grok: skipped (failed the last N times on this machine; ...)`: under the default `--grok auto`, Grok is not called on a machine where its last 3 attempts failed in the last 7 days; the check rests on Codex alone. `crossfire doctor` shows why; `--grok on` calls it anyway.
+- `WARNING: this change is <N> lines in <M> files; past about 400 lines or 10 files, split it` (lockfiles not counted): pass it on to the user; it does not block the check.
+- The reviewers are told about the owner's precedents ("Settled by the owner; do not raise these again", from `crossfire precedents`), so they do not re-raise settled questions.
+
 ## 4. Report
 
 Show the user, in this order:
@@ -53,9 +58,9 @@ Show the user, in this order:
 ## 5. Offer the next step
 
 If there are findings, offer:
-- **Fix them with a crossfire loop**, when the user owns the branch or wants to push fixes. Write a spec as the `crossfire:loop` skill describes (`crossfire spec --slug <slug>`, including "How this could fail"), then start the loop at the fix round with these findings, from the same worktree:
+- **Fix them with a crossfire loop**, when the user owns the branch or wants to push fixes. Write a spec as the `crossfire:loop` skill describes (`crossfire spec --slug <slug>`, including "How this could fail"), prove it with `crossfire spec-review` (so the loop gets the lean defaults), then start the loop at the fix round with these findings, from the same worktree:
   `crossfire init --slug <slug> --spec <spec> --base origin/<base> --from-check pr-<n> [--e2e <cmd>]...`
-  and follow its NEXT ACTION as the `crossfire:loop` skill describes. No builder round runs before the fix.
+  and follow its NEXT ACTION as the `crossfire:loop` skill describes. No builder round runs before the fix, and the pull request's own code does not count against `--max-rounds`: the check was review pass 1, so Grok (under `--grok auto` with a current spec review) reviews the fix, the first pass the loop runs.
 - **Post the findings** on the PR (only if asked).
 - **Watch the PR** for the author's changes (next section), when someone else owns it and will push fixes.
 - **Nothing**: the report stays in `.crossfire/checks/` in that worktree.

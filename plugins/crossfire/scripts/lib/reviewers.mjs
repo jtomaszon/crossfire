@@ -5,11 +5,12 @@ import path from "node:path";
 import { run, tail } from "./util.mjs";
 import { OFFICIAL, reviewerEnv } from "./plugins.mjs";
 import { severityOf } from "./referee.mjs";
+import { precedentsFocus } from "./precedents.mjs";
 
 const SPEC_MAX_CHARS = 12_000;
 
 /** The focus text both reviewers receive on top of their own adversarial framing. */
-export function buildFocus(state, { specText }) {
+export function buildFocus(state, { specText, specFile = state.spec, precedents = [] }) {
   const ledger = state.ledger.filter((e) => e.status !== "open" && e.source !== "breaker");
   const internal = state.ledger.filter((e) => e.source === "breaker");
   const lines = [
@@ -32,7 +33,8 @@ export function buildFocus(state, { specText }) {
       ...internal.map((e) => `- ${e.title} -> builder: ${answer(e)}`),
     );
   }
-  const spec = specText.length > SPEC_MAX_CHARS ? `${specText.slice(0, SPEC_MAX_CHARS)}\n[spec truncated; full text at ${state.spec}]` : specText;
+  lines.push(...precedentsFocus(precedents));
+  const spec = specText.length > SPEC_MAX_CHARS ? `${specText.slice(0, SPEC_MAX_CHARS)}\n[spec truncated; full text at ${specFile}]` : specText;
   lines.push("", "SPEC:", spec);
   return lines.join("\n");
 }
@@ -144,7 +146,7 @@ export function runReviewer(plugin, { cwd, base, focus, timeoutMs }) {
 }
 
 /** Focus for a review-only check: no loop, so no ledger; the spec or the user's focus, when given. */
-export function buildCheckFocus({ base, specText = "", focusText = "", previous = [] }) {
+export function buildCheckFocus({ base, specText = "", focusText = "", previous = [], precedents = [] }) {
   const lines = [
     `Review the branch diff against ${base} as a pull request reviewer: correctness, security, data integrity and regressions.`,
     "Pay particular attention to how it could fail in production: transactions and rollback (including nested transactions), stale in-memory state, concurrency, retries and idempotency, ordering, missing or unexpected data.",
@@ -160,6 +162,7 @@ export function buildCheckFocus({ base, specText = "", focusText = "", previous 
       ...previous.map((p, i) => `- [P${i + 1}] ${p.severity} ${p.file ?? ""}${p.lineStart ? `:${p.lineStart}` : ""} ${p.title}`),
     );
   }
+  lines.push(...precedentsFocus(precedents));
   if (specText.trim()) lines.push("", "SPEC:", specText.length > SPEC_MAX_CHARS ? `${specText.slice(0, SPEC_MAX_CHARS)}\n[spec truncated]` : specText);
   return lines.join("\n");
 }

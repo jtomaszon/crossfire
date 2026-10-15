@@ -48,6 +48,25 @@ export function summarize(health, reviewer) {
   return { attempts: list.length, consecutiveFailures, lastError: lastFail?.error ?? null, lastFailAt: lastFail?.at ?? null, lastOkAt: lastOk?.at ?? null };
 }
 
+export const AUTO_SKIP_FAILURES = 3;
+export const AUTO_SKIP_DAYS = 7;
+
+/**
+ * `--grok auto` on a host where the reviewer keeps failing: its last 3 attempts on this machine
+ * all failed and the latest failure is under 7 days old. Returns { failures, line } (skip it,
+ * without calling it), or null (call it). Skips are never recorded as attempts, so the 7 days run out.
+ */
+export function autoSkip(health, reviewer, now = Date.now()) {
+  const s = summarize(health, reviewer);
+  if (s.consecutiveFailures < AUTO_SKIP_FAILURES) return null;
+  const last = Date.parse(s.lastFailAt ?? "");
+  if (!Number.isFinite(last) || now - last >= AUTO_SKIP_DAYS * 24 * 60 * 60 * 1000) return null;
+  return {
+    failures: s.consecutiveFailures,
+    line: `${reviewer}: skipped (failed the last ${s.consecutiveFailures} times on this machine; crossfire doctor shows why; it is tried again after ${AUTO_SKIP_DAYS} days or with --${reviewer} on)`,
+  };
+}
+
 // Output that means the command could not run in this environment at all.
 // Deliberately narrow: a missing spec file ("cannot load such file") is NOT here,
 // because the builder may be about to create it.

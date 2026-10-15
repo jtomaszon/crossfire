@@ -41,6 +41,7 @@ export const files = {
   breakerBrief: (dir, round) => path.join(dir, `breaker-r${round}.md`),
   breakerResult: (dir, round) => path.join(dir, `breaker-r${round}.json`),
   report: (dir) => path.join(dir, "report.md"),
+  specSnapshot: (dir) => path.join(dir, "spec-approved.md"),
   lock: (dir) => path.join(dir, ".lock"),
 };
 

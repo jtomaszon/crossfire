@@ -166,8 +166,8 @@ export function readiness(plugin, cwd) {
   }
 }
 
-/** One line when the running crossfire is not the installed one (an old session), else null. */
+/** One line when the running crossfire is older than the installed one (an old session), else null. */
 export function versionSkew(running, installed) {
-  if (!installed?.version || !running || compareVersions(running, installed.version) === 0) return null;
+  if (!installed?.version || !running || compareVersions(running, installed.version) >= 0) return null;
   return `this session runs crossfire ${running}, but ${installed.id} ${installed.version} is installed: run /reload-plugins (or start a new session) to use it`;
 }

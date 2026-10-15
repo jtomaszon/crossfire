@@ -95,6 +95,11 @@ export function sandbox(opts = {}) {
       const file = path.join(reviewDir, `${name}-calls.jsonl`);
       return fs.existsSync(file) ? fs.readFileSync(file, "utf8").trim().split("\n").map((l) => JSON.parse(l)) : [];
     },
+    /** The diffs a reviewer was given to read (with FAKE_REVIEW_RECORD_DIFF set). */
+    diffs(name) {
+      const file = path.join(reviewDir, `${name}-diffs.jsonl`);
+      return fs.existsSync(file) ? fs.readFileSync(file, "utf8").trim().split("\n").map((l) => JSON.parse(l)) : [];
+    },
     cf(...args) {
       const r = spawnSync(process.execPath, [CLI, ...args], { cwd: repo, env, encoding: "utf8" });
       return { status: r.status, stdout: r.stdout, stderr: r.stderr, json: () => JSON.parse(r.stdout) };

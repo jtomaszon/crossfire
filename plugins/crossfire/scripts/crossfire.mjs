@@ -2,6 +2,7 @@
 // crossfire: the referee CLI for the build -> review -> fix loop.
 // Claude (the orchestrator) runs these commands; the referee decides every next step.
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as git from "./lib/git.mjs";
@@ -11,12 +12,15 @@ import { locatePlugins, readiness, usable, versionSkew, OFFICIAL } from "./lib/p
 import { buildCheckFocus, buildFocus, readSpec, runReviewer } from "./lib/reviewers.mjs";
 import * as W from "./lib/watch.mjs";
 import { crossfireRoot, ensureExcluded, files, listRuns, loadState, runDir, saveState, withLock } from "./lib/store.mjs";
-import { renderCheckReport, renderReport, statusLine } from "./lib/report.mjs";
+import { renderCheckReport, renderReport, settingsText, statusLine } from "./lib/report.mjs";
 import { appendLessons, lessonsBlock, lessonsFromCheck, lessonsFromLoop, memoryFile, readLessons } from "./lib/memory.mjs";
-import { classifyProofFailure, grokSocketHint, readHealth, recordAttempt, summarize } from "./lib/health.mjs";
+import { autoSkip, classifyProofFailure, grokSocketHint, readHealth, recordAttempt, summarize } from "./lib/health.mjs";
+import { appendPrecedent, precedentsBlock, precedentsFile, readPrecedents } from "./lib/precedents.mjs";
+import { SPEC_REVIEW_DIR, buildSpecFocus, checkSpecReviewPaths, diffSize, readSpecReview, renderSpecReviewMd, riskHigh, sha256, sizeWarning, specReviewFiles, specReviewStatus, writeSpecReviewFile } from "./lib/specreview.mjs";
+import { testChanges } from "./lib/testguard.mjs";
 import { CrossfireError, EXIT, atomicWriteJson, minutesBetween, nowIso, readJsonFile, run, runShell, tail, writeText } from "./lib/util.mjs";
 
-const VERSION = "1.3.0";
+const VERSION = "1.4.0";
 
 const USAGE = `crossfire ${VERSION}: referee for a spec-first build -> review -> fix loop
 
@@ -33,15 +37,23 @@ Usage:
                                        people only, if given), or it closes; then exit. Comments are shown
                                        until acknowledged with --ack (at least once, never lost)
   crossfire spec --slug <slug>         where to write the spec and plan (git ignores them), and this repo's memory
+  crossfire spec-review --slug <slug> --spec <file> [--plan <file>] [--base <ref>] [--grok auto|on|off]
+                                       prove the spec before any code: Codex (and Grok) review the spec and
+                                       plan as a design; saves .crossfire/specs/<slug>.review.json and .md
+  crossfire precedent add "<ruling>"   record a ruling the owner gave (only on the person's own words);
+  crossfire precedents                 briefs and reviewers are told not to raise it again
   crossfire respec --from-loop <slug> --slug <new-slug> [--force]
                                        start over: draft a new spec from a finished loop, with every finding
                                        as a known failure mode; the new loop starts from the base
   crossfire memory                     what reviewers found in this repository before
   crossfire init --slug <slug> --spec <file> [--base <ref>] [--e2e <cmd>]... [--invariant <cmd>]...
-                 [--max-rounds 3] [--max-minutes 45] [--grok auto|on|off] [--breaker on|off]
+                 [--max-rounds 2] [--max-minutes 45] [--grok auto|on|off] [--breaker on|off]
                  [--plan <file>] [--force] [--no-preflight] [--no-failure-modes] [--from-check <id>]
                                        --from-check: start at the fix round with that check's findings
                                        init first checks every proof command can run here (preflight)
+                                       with a current spec review (lean): grok auto = first code pass only,
+                                       breaker off (on with **Risk:** high), max-rounds 2; without one:
+                                       grok every pass, breaker on, max-rounds 3. Flags always win.
   crossfire built --slug <slug>        record the builder's result file, run the proof commands (G0)
   crossfire attacked --slug <slug>     record the breaker's result (proven attacks get one harden round)
   crossfire proof --slug <slug> [--e2e <cmd>]... [--invariant <cmd>]...
@@ -137,13 +149,13 @@ function emitNext(ctx, dir, state, extra = []) {
   if (next.action === ACTIONS.SEND_BUILDER) {
     const brief = files.brief(dir, state.round, next.brief);
     const result = files.result(dir, state.round, next.brief);
-    if (!fs.existsSync(brief)) writeText(brief, renderBrief(state, { resultFile: result, branch: git.branch(state.repo), failures: next.failures, lessons: lessonsBlock(state.repo) }));
+    if (!fs.existsSync(brief)) writeText(brief, renderBrief(state, { resultFile: result, branch: git.branch(state.repo), failures: next.failures, specFile: specPointer(dir, state), lessons: lessonsBlock(state.repo), precedents: precedentsBlock(state.repo) }));
     lines.push(`NEXT ACTION: SEND_BUILDER (${next.brief})`, `BRIEF: ${brief}`, `RESULT FILE: ${result}`, `THEN: crossfire built --slug ${state.slug}`);
     Object.assign(data, { brief, resultFile: result, then: `crossfire built --slug ${state.slug}` });
   } else if (next.action === ACTIONS.SEND_BREAKER) {
     const brief = files.breakerBrief(dir, state.round);
     const result = files.breakerResult(dir, state.round);
-    if (!fs.existsSync(brief)) writeText(brief, renderBreakerBrief(state, { resultFile: result, branch: git.branch(state.repo), head: git.head(state.repo), lessons: lessonsBlock(state.repo) }));
+    if (!fs.existsSync(brief)) writeText(brief, renderBreakerBrief(state, { resultFile: result, branch: git.branch(state.repo), head: git.head(state.repo), specFile: specPointer(dir, state), lessons: lessonsBlock(state.repo), precedents: precedentsBlock(state.repo) }));
     lines.push("NEXT ACTION: SEND_BREAKER", `BRIEF: ${brief}`, `RESULT FILE: ${result}`, `THEN: crossfire attacked --slug ${state.slug}`);
     Object.assign(data, { brief, resultFile: result, then: `crossfire attacked --slug ${state.slug}` });
   } else if (next.action === ACTIONS.RUN_REVIEW) {
@@ -184,9 +196,28 @@ export function reviewersLine(state) {
       const fail = [...mine].reverse().find((r) => !r.ok);
       const last = [...mine].reverse().find((r) => r.ok);
       const verdict = last?.verdict && last.verdict !== "approve" ? ` (last verdict: ${last.verdict})` : "";
-      return `${name} ${ok}/${passes} passes${verdict}${ok < passes && fail ? ` (${fail.skipped ? "not usable" : "failed"}: ${fail.error})` : ""}`;
+      const label = fail?.notRun ? "not run" : fail?.autoSkip ? "skipped" : fail?.skipped ? "not usable" : "failed";
+      return `${name} ${ok}/${passes} passes${verdict}${ok < passes && fail ? ` (${label}: ${fail.error})` : ""}`;
     })
     .join(", ");
+}
+
+/**
+ * Does Grok review this pass? { run, line (printed when it does not), record (a reviewerRuns entry
+ * when it does not) }. `--grok on` always runs (the caller has checked it is usable). Under auto:
+ * a 1.4 lean loop runs it on its first code pass only, a reviewer that is not usable is noted, and
+ * one that failed its last 3 attempts on this machine in the last 7 days is skipped without a call.
+ */
+export function grokFor({ grok, plugins, state = null, pass = null, health = readHealth() }) {
+  if (grok === "off") return { run: false, line: null, record: null };
+  if (grok === "on") return { run: true, line: null, record: null };
+  if (state?.policy === 2 && state.decided?.grokPasses === "first" && pass !== state.firstCodePass) {
+    return { run: false, line: `grok: not run on pass ${pass} (auto: first code pass only)`, record: { reviewer: "grok", ok: false, notRun: true, error: "auto, first code pass only" } };
+  }
+  if (!usable(plugins.grok)) return { run: false, line: null, record: { reviewer: "grok", ok: false, skipped: true, error: plugins.grok.problems[0] ?? "not installed" } };
+  const skip = autoSkip(health, "grok");
+  if (skip) return { run: false, line: skip.line, record: { reviewer: "grok", ok: false, skipped: true, autoSkip: true, error: `failed the last ${skip.failures} times on this machine` } };
+  return { run: true, line: null, record: null };
 }
 
 function requireLoop(cwd, slug) {
@@ -291,7 +322,7 @@ function doctor(ctx) {
     lines.push(`${c.ok ? "ok  " : c.required ? "FAIL" : "warn"} ${c.name.padEnd(11)} ${c.detail}`);
     for (const step of c.install ?? []) lines.push(`       ${step}`);
   }
-  if (!checks.find((c) => c.name === "grok").ok) lines.push("", "Grok Build is optional: with it, every review pass gets a second, independent reviewer.");
+  if (!checks.find((c) => c.name === "grok").ok) lines.push("", "Grok Build is optional: with it, the spec review and the first code review pass get a second, independent reviewer (every pass with --grok on, or in a loop without a current spec review).");
   out(ctx, lines.join("\n"), { version: VERSION, ready, checks });
   return ready ? EXIT.OK : EXIT.ENVIRONMENT;
 }
@@ -323,8 +354,7 @@ function init(ctx, opts) {
     if (head !== fromCheck.head) throw new CrossfireError(`the branch moved since check ${fromCheck.id} (checked ${fromCheck.head.slice(0, 12)}, now ${head.slice(0, 12)}); its findings may be stale. Run crossfire check again.`);
     if (fromCheck.baseSha !== baseSha) throw new CrossfireError(`check ${fromCheck.id} reviewed against ${fromCheck.base} (${fromCheck.baseSha.slice(0, 12)}), not ${base} (${baseSha.slice(0, 12)}); use the same --base, or run crossfire check again`);
   }
-  const breakerOpt = opts.breaker ?? "on";
-  if (!["on", "off"].includes(breakerOpt)) throw new CrossfireError("--breaker must be on or off");
+  if (opts.breaker !== undefined && !["on", "off"].includes(opts.breaker)) throw new CrossfireError("--breaker must be on or off");
   const plan = opts.plan ? path.resolve(ctx.cwd, opts.plan) : null;
   if (plan && !fs.existsSync(plan)) throw new CrossfireError(`plan not found: ${plan}`);
   if (plan && !path.relative(repo, plan).startsWith("..") && git.changedFiles(repo, baseSha).includes(path.relative(repo, plan).split(path.sep).join("/"))) {
@@ -360,6 +390,20 @@ function init(ctx, opts) {
     throw new CrossfireError(`--grok on, but Grok Build is not usable: ${plugins.grok.problems.join("; ") || "grok-build@xai-grok-build is not installed"}`, EXIT.ENVIRONMENT);
   }
 
+  // Is this the spec the reviewers proved? Only then do the lean defaults apply (never blocks).
+  const specBytes = fs.readFileSync(spec);
+  const reviewFiles = specReviewFiles(path.join(crossfireRoot(repo), "specs"), slug);
+  const specReview = specReviewStatus({ review: readSpecReview(reviewFiles.json), spec: specBytes, plan: plan ? fs.readFileSync(plan) : null, responseFile: reviewFiles.response });
+  const lean = specReview.status === "current" || specReview.status === "revised";
+  const decided = { lean, grokPasses: grok === "off" ? "none" : grok === "on" || !lean ? "every" : "first" };
+  let breaker;
+  if (opts.breaker !== undefined) [breaker, decided.breakerFrom] = [opts.breaker === "on", "--breaker"];
+  else if (!lean) [breaker, decided.breakerFrom] = [true, "no current spec review"];
+  else if (riskHigh(specBytes.toString("utf8"))) [breaker, decided.breakerFrom] = [true, "the spec's Risk: high"];
+  else [breaker, decided.breakerFrom] = [false, "lean default"];
+  const maxRounds = intOpt(opts, "max-rounds", lean ? 2 : 3, 1, 10);
+  decided.maxRoundsFrom = opts["max-rounds"] !== undefined ? "--max-rounds" : lean ? "lean default" : "no current spec review";
+
   ensureExcluded(repo);
   const dir = runDir(ctx.cwd, slug);
   return withLock(dir, () => {
@@ -378,15 +422,36 @@ function init(ctx, opts) {
       baseSha,
       e2e: opts.e2e,
       invariants: opts.invariant,
-      maxRounds: intOpt(opts, "max-rounds", 3, 1, 10),
+      maxRounds,
       maxMinutes: intOpt(opts, "max-minutes", 45, 5, 24 * 60),
       grok,
-      breaker: breakerOpt === "on",
+      breaker,
       startedAt: nowIso(),
     });
     state.plan = plan;
+    // The spec as approved here is what the referee grants and judges by for the whole loop (the
+    // allowed test changes, the reviewers' SPEC); the spec file itself stays writable by the builder.
+    const snapshot = files.specSnapshot(dir);
+    fs.writeFileSync(snapshot, specBytes);
+    state.specSnapshot = { file: snapshot, sha256: sha256(specBytes) };
+    // The head the loop starts from: the test guard judges only the commits the loop's builder makes
+    // after it (a --from-check pull request's own commits are not the builder's). Kept in state and,
+    // beside the spec's sha256, outside the run directory.
+    state.startHead = git.head(repo);
+    const anchor = specAnchorFile(repo, dir);
+    fs.mkdirSync(path.dirname(anchor), { recursive: true });
+    fs.writeFileSync(anchor, `${state.specSnapshot.sha256}\n${state.startHead}\n`);
+    // 1.4: the settings this loop decided, read from state from now on (a loop without policy is a 1.3 loop).
+    state.policy = 2;
+    state.decided = decided;
+    state.specReview = { status: specReview.status, at: specReview.at, findings: specReview.findings, line: specReview.line, file: reviewFiles.json, responseFile: specReview.responseFile ?? null };
+    // --max-rounds counts the builder legs crossfire runs: a --from-check loop's pull request is not one,
+    // and Grok's first code pass is the first pass crossfire runs (the check was pass 1).
+    state.roundOffset = fromCheck ? 1 : 0;
+    state.firstCodePass = fromCheck ? 2 : 1;
     state.branch = git.branch(repo); // the ladder reads this branch after SHIP
     state.history.push({ at: state.startedAt, event: "init", detail: `base ${base} (${baseSha.slice(0, 12)}), spec ${spec}; preflight: ${preflight}` });
+    state.history.push({ at: state.startedAt, event: "spec-review", detail: `${specReview.line}; ${settingsText(state)}` });
     if (fromCheck) {
       // The check was review pass 1 of the branch as it stands: the loop starts at its fix round.
       state.phase = "review";
@@ -401,6 +466,10 @@ function init(ctx, opts) {
     if (proofCount > 6) heavy.push(`${proofCount} proof commands`);
     if (preflightMinutes != null && preflightMinutes > 5) heavy.push(`a ${Math.round(preflightMinutes)}-minute first run`);
     emitNext(ctx, dir, state, [
+      specReview.line,
+      ...(specReview.note ? [`NOTE: ${specReview.note}`] : []),
+      ...(lean ? [] : ["WARNING: no current spec review; using the full review defaults. Run crossfire spec-review first to use the lean ones."]),
+      `SETTINGS: ${settingsText(state)}`,
       `PREFLIGHT: ${preflight}`,
       ...(heavy.length ? [`WARNING: ${heavy.join(" and ")}; they run on every builder round. Keep proof commands to what this change touches (the tests for the code it changes, plus a check it must not break); the full suite is CI's job on the pull request.`] : []),
       "AGENTS: this loop needs 2 concurrent agents: you, and one builder or breaker at a time. With a cap of N concurrent agents, run at most N/2 loops at once.",
@@ -430,6 +499,138 @@ function specCmd(ctx, opts) {
     ...lessons.map((l) => `  ${l}`),
     "git ignores .crossfire/, so spec and plan are never committed. Then: crossfire init --spec <spec> --plan <plan>.",
   ].join("\n"), { specFile: file, planFile, exists: fs.existsSync(file), template, memory: lessons });
+  return EXIT.OK;
+}
+
+// ---- spec-review (prove the spec before any code) ---------------------------
+
+/**
+ * Run `fn(worktree)` in a throwaway worktree on the base, with the spec (and plan) committed at
+ * crossfire-spec-review/<slug>.md on a throwaway branch, so a reviewer's diff against the base is
+ * exactly those documents. The worktree, its directory and the branch are removed afterwards,
+ * whatever happens; the user's branch, working tree and index are never touched.
+ */
+function withSpecWorktree(repo, baseSha, slug, specBytes, planBytes, fn) {
+  // No hooks: nothing of the user's runs for crossfire's own throwaway commit.
+  const g = (cwd, args) => run("git", ["-c", "core.hooksPath=/dev/null", ...args], { cwd });
+  const firstLine = (r) => (r.stderr || r.stdout || `exit ${r.status}`).trim().split("\n")[0];
+  const branch = `crossfire/spec-review-${slug}-${Date.now()}-${process.pid}`;
+  if (git.resolveRef(repo, `refs/heads/${branch}`)) throw new CrossfireError(`branch ${branch} already exists; run spec-review again`, EXIT.ENVIRONMENT);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "crossfire-spec-review-"));
+  const wt = path.join(tmp, "wt");
+  let added = false;
+  try {
+    const add = g(repo, ["worktree", "add", "-q", "-b", branch, wt, baseSha]);
+    if (add.status !== 0) throw new CrossfireError(`could not create the spec review worktree: ${firstLine(add)}`, EXIT.ENVIRONMENT);
+    added = true;
+    // Write only to paths crossfire creates here itself: anything the base already has at this path
+    // (a symlink out of the worktree, a file, a directory) is refused before a byte is written.
+    const dir = path.join(wt, SPEC_REVIEW_DIR);
+    let there = true;
+    try {
+      fs.lstatSync(dir);
+    } catch (e) {
+      if (e.code !== "ENOENT") throw e;
+      there = false;
+    }
+    if (there) throw new CrossfireError(`${SPEC_REVIEW_DIR} already exists on the base (${baseSha.slice(0, 12)}); crossfire writes the spec there only when it creates the directory itself. Remove it from the base, or review against another --base.`, EXIT.ENVIRONMENT);
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, `${slug}.md`), specBytes, { flag: "wx" });
+    if (planBytes) fs.writeFileSync(path.join(dir, `${slug}.plan.md`), planBytes, { flag: "wx" });
+    const stage = g(wt, ["add", "-f", "--", SPEC_REVIEW_DIR]);
+    if (stage.status !== 0) throw new CrossfireError(`could not stage the spec in the review worktree: ${firstLine(stage)}`, EXIT.ENVIRONMENT);
+    const commit = g(wt, ["-c", "user.name=crossfire", "-c", "user.email=crossfire@localhost", "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", `crossfire spec review: ${slug}`]);
+    if (commit.status !== 0) throw new CrossfireError(`could not commit the spec in the review worktree: ${firstLine(commit)}`, EXIT.ENVIRONMENT);
+    // Fail closed: a reviewer must never be handed an empty diff.
+    if (g(wt, ["diff", "--quiet", baseSha, "HEAD", "--", SPEC_REVIEW_DIR]).status !== 1) throw new CrossfireError("the spec review commit is empty; nothing was reviewed", EXIT.ENVIRONMENT);
+    return fn(wt);
+  } finally {
+    if (added) g(repo, ["worktree", "remove", "--force", wt]);
+    fs.rmSync(tmp, { recursive: true, force: true });
+    g(repo, ["worktree", "prune"]);
+    if (git.resolveRef(repo, `refs/heads/${branch}`)) g(repo, ["branch", "-D", branch]);
+  }
+}
+
+function specReviewCmd(ctx, opts) {
+  const slug = opts.slug;
+  if (!slug) throw new CrossfireError("--slug is required");
+  runDir(ctx.cwd, slug); // validates the slug
+  if (!opts.spec) throw new CrossfireError("--spec is required (the spec to review)");
+  const repo = git.repoRoot(ctx.cwd);
+  const spec = path.resolve(ctx.cwd, opts.spec);
+  if (!fs.existsSync(spec)) throw new CrossfireError(`spec not found: ${spec}`);
+  const plan = opts.plan ? path.resolve(ctx.cwd, opts.plan) : null;
+  if (plan && !fs.existsSync(plan)) throw new CrossfireError(`plan not found: ${plan}`);
+  const base = opts.base ?? git.defaultBase(repo);
+  if (!base) throw new CrossfireError("could not find a base branch; pass --base <ref>");
+  const baseSha = git.resolveRef(repo, base);
+  if (!baseSha) throw new CrossfireError(`base ${base} does not resolve to a commit`);
+  const grok = opts.grok ?? "auto";
+  if (!["auto", "on", "off"].includes(grok)) throw new CrossfireError("--grok must be auto, on or off");
+  const timeoutMs = opts["timeout-sec"] !== undefined ? intOpt(opts, "timeout-sec", 60, 1, 7200) * 1000 : intOpt(opts, "timeout-min", 20, 1, 120) * 60 * 1000;
+
+  const plugins = locatePlugins();
+  if (!usable(plugins.codex)) throw new CrossfireError(`the Codex reviewer is required and not usable: ${plugins.codex.problems.join("; ") || "codex@openai-codex is not installed"}. Run \`crossfire doctor\`.`, EXIT.ENVIRONMENT);
+  if (grok === "on" && !usable(plugins.grok)) throw new CrossfireError(`--grok on, but Grok Build is not usable: ${plugins.grok.problems.join("; ") || "grok-build@xai-grok-build is not installed"}`, EXIT.ENVIRONMENT);
+  const grokPlan = grokFor({ grok, plugins });
+  const reviewers = [plugins.codex, ...(grokPlan.run ? [plugins.grok] : [])];
+
+  const specsDir = path.join(crossfireRoot(repo), "specs");
+  const out_ = specReviewFiles(specsDir, slug);
+  // Refuse a symlinked .crossfire, .crossfire/specs or review document before anything runs or is written.
+  checkSpecReviewPaths(repo, [out_.json, out_.md]);
+  ensureExcluded(repo);
+  const specBytes = fs.readFileSync(spec);
+  const planBytes = plan ? fs.readFileSync(plan) : null;
+  const focus = buildSpecFocus({ slug, base, hasPlan: Boolean(plan), precedents: readPrecedents(repo) });
+  const results = withSpecWorktree(repo, baseSha, slug, specBytes, planBytes, (wt) => reviewers.map((p) => runReviewer(p, { cwd: wt, base: baseSha, focus, timeoutMs })));
+  const at = nowIso();
+  for (const r of results) recordAttempt(r.reviewer, { ok: r.ok, at, seconds: r.seconds, error: r.error });
+  const reviewerRuns = results.map((r) => ({ pass: 1, reviewer: r.reviewer, ok: r.ok, seconds: r.seconds, verdict: r.verdict ?? null, findings: r.ok ? r.findings.length : null, error: r.ok ? null : String(r.error).split("\n")[0].slice(0, 300) }));
+  if (grokPlan.record) reviewerRuns.push({ pass: 1, ...grokPlan.record });
+  const reviewersText = reviewersLine({ reviewPass: 1, reviewerRuns });
+  const codex = results.find((r) => r.reviewer === "codex");
+  if (!codex.ok) {
+    out(ctx, [`SPEC REVIEW ${slug}: the Codex review failed: ${codex.error}`, "Nothing was saved. Run crossfire spec-review again; if it keeps failing, run crossfire doctor."].join("\n"), { slug, error: codex.error });
+    return EXIT.MALFORMED;
+  }
+  const findings = collectFindings(results.filter((r) => r.ok));
+  const record = { version: 1, slug, at, repo, spec, plan, base, baseSha, specSha256: sha256(specBytes), planSha256: planBytes ? sha256(planBytes) : null, reviewers: reviewerRuns, reviewersText, findings, responseFile: out_.response };
+  checkSpecReviewPaths(repo, [out_.json, out_.md]);
+  writeSpecReviewFile(repo, out_.json, `${JSON.stringify(record, null, 2)}\n`);
+  writeSpecReviewFile(repo, out_.md, renderSpecReviewMd(record));
+  const sev = (f) => f.reviewerSeverity ?? f.severity;
+  const counts = ["high", "medium", "low"].map((x) => `${findings.filter((f) => (["critical", "high"].includes(String(sev(f)).toLowerCase()) ? "high" : String(sev(f)).toLowerCase() === "medium" ? "medium" : "low") === x).length} ${x}`).join(", ");
+  const lines = [
+    `SPEC REVIEW ${slug} · ${spec}${plan ? ` + ${plan}` : ""} against ${base} (${baseSha.slice(0, 12)})`,
+    `REVIEWERS: ${reviewersText}`,
+    ...(grokPlan.line ? [grokPlan.line] : []),
+    ...results.filter((r) => !r.ok).map((r) => `WARNING: ${r.reviewer} did not review (${r.error}); this spec review rests on Codex alone.`),
+    `FINDINGS: ${findings.length ? `${findings.length} (${counts})` : "none"}`,
+    ...findings.map((f, i) => `  ${i + 1}. ${sev(f)} ${f.file ?? ""}${f.lineStart ? `:${f.lineStart}` : ""} ${f.title} (${f.reviewers.join("+")})`),
+    `REVIEW: ${out_.json}`,
+    `REPORT: ${out_.md}`,
+    `NEXT: revise the spec for each finding, write ${out_.response} (one line per finding: how it was addressed, or why not), and show the person the revised spec with the findings and responses. Then crossfire init reports it as revised after review.`,
+  ];
+  out(ctx, lines.join("\n"), { slug, review: out_.json, report: out_.md, findings, reviewers: reviewersText, responseFile: out_.response });
+  return EXIT.OK;
+}
+
+// ---- precedents ------------------------------------------------------------
+
+function precedentCmd(ctx, rest) {
+  if (rest[0] !== "add") throw new CrossfireError("usage: crossfire precedent add \"<the person's ruling, in one sentence>\"");
+  const repo = git.repoRoot(ctx.cwd);
+  const line = appendPrecedent(repo, rest.slice(1).join(" "));
+  out(ctx, [`PRECEDENT: ${line}`, `FILE: ${precedentsFile(repo)}`, "Builders, the breaker and reviewers are told not to raise it again (the latest 30)."].join("\n"), { line, file: precedentsFile(repo) });
+  return EXIT.OK;
+}
+
+function precedentsCmd(ctx) {
+  const repo = git.repoRoot(ctx.cwd);
+  const lines = readPrecedents(repo, 10_000);
+  out(ctx, lines.length ? [`PRECEDENTS ${precedentsFile(repo)} (${lines.length}; prompts carry the latest 30)`, ...lines].join("\n") : "No precedents in this repository: the owner adds them with crossfire precedent add.", { file: precedentsFile(repo), precedents: lines });
   return EXIT.OK;
 }
 
@@ -463,6 +664,75 @@ function envFailureText(failures) {
     .join("\n");
 }
 
+/**
+ * Where init records the approved spec's sha256 for a loop: in the git common dir, outside the run
+ * directory (whose state.json and snapshot sit beside the builder's result file).
+ */
+function specAnchorFile(repo, dir) {
+  return path.join(git.gitCommonDir(repo), "crossfire", "approved-specs", `${sha256(path.resolve(dir)).slice(0, 32)}.sha256`);
+}
+
+/** The record's lines (sha256, start head), or null when there is no record; an unreadable record throws (fail closed). */
+function readAnchorLines(repo, dir) {
+  const file = specAnchorFile(repo, dir);
+  try {
+    return fs.readFileSync(file, "utf8").trim().split("\n").map((l) => l.trim());
+  } catch (e) {
+    if (e.code === "ENOENT") return null;
+    throw new CrossfireError(`could not read the record of the spec approved at init (${file}): ${e.message}`);
+  }
+}
+
+/** The recorded sha256, or null when there is no record. */
+function readSpecAnchor(repo, dir) {
+  return readAnchorLines(repo, dir)?.[0] ?? null;
+}
+
+/**
+ * The commit a 1.4 loop started from: in state and in the record outside the run directory, and the
+ * two agree. Anything else throws (fail closed); it never falls back to the base.
+ */
+function loopStartHead(dir, state) {
+  const recorded = readAnchorLines(state.repo, dir)?.[1] ?? null;
+  if (!state.startHead || !recorded || state.startHead !== recorded || !/^[0-9a-f]{40,64}$/.test(recorded)) {
+    throw new CrossfireError(`weakens tests: the commit this loop started from is missing from its state or its record (${specAnchorFile(state.repo, dir)}), or the two differ; the test guard cannot tell the builder's commits from the branch's earlier ones. Start a new loop (crossfire init --force).`);
+  }
+  return recorded;
+}
+
+/** A 1.4 loop is bound to its approved spec: its anchor exists, or its state says it is a 1.4 loop. */
+function specBound(dir, state) {
+  return readSpecAnchor(state.repo, dir) !== null || state.policy != null || state.specSnapshot != null || state.decided != null;
+}
+
+/**
+ * The spec as approved at init: the run directory's snapshot, checked against the sha256 recorded
+ * outside the run directory then. Null only for a loop started before 1.4 (no record and no 1.4
+ * state). A record that is missing, or a snapshot that is gone or changed, throws (fail closed); it
+ * never falls back to the spec file, which the builder can write.
+ */
+function approvedSpec(dir, state) {
+  const want = readSpecAnchor(state.repo, dir);
+  if (want === null) {
+    if (!specBound(dir, state)) return null;
+    throw new CrossfireError(`the record of the spec approved at init (${specAnchorFile(state.repo, dir)}) is missing; nothing is judged against a spec that cannot be checked. Start a new loop from the spec (crossfire init --force, or crossfire respec).`);
+  }
+  const file = files.specSnapshot(dir);
+  let bytes;
+  try {
+    bytes = fs.readFileSync(file);
+  } catch {
+    bytes = null;
+  }
+  if (!bytes || sha256(bytes) !== want) throw new CrossfireError(`the spec as approved at init (${file}) is missing or no longer matches the sha256 recorded then; nothing is judged against a changed spec. Restore it, or start a new loop from the revised spec (crossfire respec).`);
+  return bytes.toString("utf8");
+}
+
+/** The spec file every brief and reviewer focus names: the approved snapshot for a 1.4 loop. */
+function specPointer(dir, state) {
+  return specBound(dir, state) ? files.specSnapshot(dir) : state.spec;
+}
+
 function built(ctx, opts) {
   const { dir } = requireLoop(ctx.cwd, opts.slug);
   return withLock(dir, () => {
@@ -491,6 +761,18 @@ function built(ctx, opts) {
         ahead: git.commitsAhead(state.repo, state.baseSha),
       });
     }
+    // The builder never weakens tests, whatever status it reports: read from the branch itself, not
+    // from the result, and only from the commits after the head the loop started from. Exemptions come
+    // from the spec as approved at init, never from the file as it is now. A loop started before 1.4
+    // (no policy and no approved-spec record) keeps the 1.3 rules: no guard.
+    let guard = null;
+    try {
+      const specText = approvedSpec(dir, state);
+      if (specText !== null) guard = { from: loopStartHead(dir, state), specText };
+    } catch (e) {
+      problems.push(e.message);
+    }
+    if (guard) problems.push(...testChanges(state.repo, guard.from, guard.specText).problems.map((p) => `weakens tests: ${p} (existing test files are not changed unless the spec allows it; add new tests in new files; a file the "## Allowed test changes" section of the spec as approved at init names is exempt)`));
     if (problems.length) {
       const esc = noteMalformed(state, key, problems.join("; "), at);
       saveState(dir, state);
@@ -500,6 +782,14 @@ function built(ctx, opts) {
       }
       out(ctx, [statusLine(state, minutesBetween(state.startedAt)), "MALFORMED: the builder's result was not accepted (nothing advanced).", ...problems.map((p) => `- ${p}`), `RE-ASK: send the builder back to ${files.brief(dir, state.round, kind)} with the problems above, then run crossfire built --slug ${state.slug} again. A second malformed result escalates (G1).`].join("\n"), { malformed: true, problems });
       return EXIT.MALFORMED;
+    }
+
+    if (result.status === "SPEC_MISMATCH") {
+      // The spec does not fit: no proof command runs and nothing in the ledger changes; the owner decides.
+      afterBuild(state, result, null, { at, minutesElapsed: minutesBetween(state.startedAt) });
+      saveState(dir, state);
+      emitNext(ctx, dir, state, [`SPEC MISMATCH (${result.handoff.severity}): ${result.handoff.summary.split("\n")[0].slice(0, 300)}`, "No proof command ran. Show the person the handoff in the report; revising the spec (crossfire respec) is their call."]);
+      return EXIT.OK;
     }
 
     const builtRound = state.round;
@@ -551,8 +841,8 @@ function check(ctx, opts) {
   const plugins = locatePlugins();
   if (!usable(plugins.codex)) throw new CrossfireError(`the Codex reviewer is required and not usable: ${plugins.codex.problems.join("; ") || "codex@openai-codex is not installed"}. Run \`crossfire doctor\`.`, EXIT.ENVIRONMENT);
   if (grok === "on" && !usable(plugins.grok)) throw new CrossfireError(`--grok on, but Grok Build is not usable: ${plugins.grok.problems.join("; ")}`, EXIT.ENVIRONMENT);
-  const reviewers = [plugins.codex];
-  if (grok !== "off" && usable(plugins.grok)) reviewers.push(plugins.grok);
+  const grokPlan = grokFor({ grok, plugins });
+  const reviewers = [plugins.codex, ...(grokPlan.run ? [plugins.grok] : [])];
 
   ensureExcluded(repo);
   const head = git.head(repo);
@@ -565,14 +855,16 @@ function check(ctx, opts) {
   const prev = opts.since ? loadCheck(repo, opts.since) : null;
   if (prev && prev.head === head) throw new CrossfireError(`nothing new since check ${prev.id}: the branch is still at ${head.slice(0, 12)}`);
   if (prev && opts.name === undefined && id === prev.id) throw new CrossfireError("pass --name for the re-check; it must differ from the earlier check");
-  const focus = buildCheckFocus({ base, specText, focusText: opts.focus ?? prev?.focus ?? "", previous: prev?.findings ?? [] });
+  const focus = buildCheckFocus({ base, specText, focusText: opts.focus ?? prev?.focus ?? "", previous: prev?.findings ?? [], precedents: readPrecedents(repo) });
   const timeoutMs = intOpt(opts, "timeout-min", 20, 1, 120) * 60 * 1000;
+  const size = diffSize(repo, baseSha);
+  const tooBig = sizeWarning(size);
 
   const results = reviewers.map((p) => {
     return runReviewer(p, { cwd: repo, base: baseSha, focus, timeoutMs });
   });
   const reviewerRuns = results.map((r) => ({ pass: 1, reviewer: r.reviewer, ok: r.ok, seconds: r.seconds, verdict: r.verdict ?? null, findings: r.ok ? r.findings.length : null, error: r.ok ? null : String(r.error).split("\n")[0].slice(0, 300) }));
-  if (grok !== "off" && !usable(plugins.grok)) reviewerRuns.push({ pass: 1, reviewer: "grok", ok: false, skipped: true, error: plugins.grok.problems[0] ?? "not installed" });
+  if (grokPlan.record) reviewerRuns.push({ pass: 1, ...grokPlan.record });
   const reviewersText = reviewersLine({ reviewPass: 1, reviewerRuns });
 
   if (git.head(repo) !== head) {
@@ -595,7 +887,7 @@ function check(ctx, opts) {
     const d = compareWithPrevious(prev.findings, findings);
     since = { id: prev.id, head: prev.head, resolved: d.resolved, stillOpen: d.stillOpen, unclear: d.unclear, fresh: d.fresh.length, near: d.fresh.filter((f) => f.nearPrevious).map((f) => ({ title: f.title, near: f.nearPrevious.map((n) => `P${n}`).join(", ") })) };
   }
-  const record = { version: 1, id, at, repo, branch, head, base, baseSha, focus: opts.focus ?? prev?.focus ?? null, spec: opts.spec ? path.resolve(ctx.cwd, opts.spec) : null, reviewerRuns, reviewersText, reviews: ok, findings, approved: findings.length === 0, since };
+  const record = { version: 1, id, at, repo, branch, head, base, baseSha, focus: opts.focus ?? prev?.focus ?? null, spec: opts.spec ? path.resolve(ctx.cwd, opts.spec) : null, reviewerRuns, reviewersText, reviews: ok, findings, approved: findings.length === 0, since, size: size ? { ...size, warning: Boolean(tooBig) } : null };
   atomicWriteJson(path.join(dir, "check.json"), record);
   try {
     appendLessons(repo, lessonsFromCheck(record));
@@ -609,6 +901,8 @@ function check(ctx, opts) {
   const lines = [
     `CHECK ${id} · ${branch ?? "HEAD"} ${head.slice(0, 12)} against ${base}`,
     `REVIEWERS: ${reviewersText}`,
+    ...(grokPlan.line ? [grokPlan.line] : []),
+    ...(tooBig ? [tooBig] : []),
     ...results.filter((r) => !r.ok).map((r) => `WARNING: ${r.reviewer} did not review (${r.error}); this check rests on Codex alone.`),
     ...(since ? [`SINCE ${since.id} (${since.head.slice(0, 12)}): ${since.resolved.length} fixed, ${since.stillOpen.length} still open, ${since.unclear.length} unclear, ${since.fresh} new`, ...since.resolved.map((p) => `  fixed: [P${p.index}] ${p.title}`), ...since.stillOpen.map((s) => `  still open: [P${s.previous.index}] ${s.previous.title}`), ...since.unclear.map((p) => `  unclear: [P${p.index}] ${p.title} (a new finding is near it; read both)`), ...since.near.map((n) => `  new (near ${n.near}): ${n.title}`)] : []),
     `VERDICT: ${findings.length ? `${findings.length} finding(s): ${counts}` : "APPROVED, nothing to fix"}`,
@@ -948,14 +1242,17 @@ function review(ctx, opts) {
     if (!usable(plugins.codex)) {
       throw new CrossfireError(`the Codex reviewer is required and not usable: ${plugins.codex.problems.join("; ")}. Run \`crossfire doctor\`, fix it, then run review again (nothing advanced).`, EXIT.ENVIRONMENT);
     }
-    const reviewers = [plugins.codex];
-    if (state.grok !== "off" && usable(plugins.grok)) reviewers.push(plugins.grok);
     if (state.grok === "on" && !usable(plugins.grok)) {
       throw new CrossfireError(`this loop requires Grok Build (--grok on) and it is not usable: ${plugins.grok.problems.join("; ")}`, EXIT.ENVIRONMENT);
     }
 
     const pass = state.reviewPass + 1;
-    const focus = buildFocus(state, { specText: readSpec(state.spec) });
+    const grokPlan = grokFor({ grok: state.grok, plugins, state, pass });
+    const reviewers = [plugins.codex, ...(grokPlan.run ? [plugins.grok] : [])];
+    const size = diffSize(state.repo, state.baseSha);
+    const tooBig = sizeWarning(size);
+    const approved = approvedSpec(dir, state);
+    const focus = buildFocus(state, { specText: approved ?? readSpec(state.spec), specFile: approved === null ? state.spec : files.specSnapshot(dir), precedents: readPrecedents(state.repo) });
     const results = reviewers.map((p) => runReviewer(p, { cwd: state.repo, base: state.baseSha, focus, timeoutMs }));
     const at = nowIso(); // the timeline records when the reviews finished, not when they started
 
@@ -973,7 +1270,7 @@ function review(ctx, opts) {
       recordAttempt(r.reviewer, { ok: r.ok, at, seconds: r.seconds, error: r.error });
       state.reviewerRuns.push({ pass, reviewer: r.reviewer, ok: r.ok, seconds: r.seconds, verdict: r.verdict ?? null, findings: r.ok ? r.findings.length : null, error: r.ok ? null : String(r.error).split("\n")[0].slice(0, 300) });
     }
-    if (state.grok !== "off" && !usable(plugins.grok)) state.reviewerRuns.push({ pass, reviewer: "grok", ok: false, skipped: true, error: plugins.grok.problems[0] ?? "not installed" });
+    if (grokPlan.record) state.reviewerRuns.push({ pass, ...grokPlan.record });
     const codex = results.find((r) => r.reviewer === "codex");
     if (!codex.ok) {
       const esc = noteMalformed(state, `review-p${pass}-codex`, codex.error, at);
@@ -986,6 +1283,11 @@ function review(ctx, opts) {
       return EXIT.MALFORMED;
     }
     const extra = results.map((r) => (r.ok ? `${r.reviewer}: ${r.verdict}, ${r.findings.length} finding(s) in ${r.seconds}s` : `${r.reviewer}: FAILED (${r.error}); continuing without it`));
+    if (grokPlan.line) extra.push(grokPlan.line);
+    if (tooBig) {
+      extra.push(tooBig);
+      (state.sizeWarnings ??= []).push({ pass, lines: size.lines, files: size.files });
+    }
     const lone = results.filter((r) => !r.ok && !r.required).map((r) => r.reviewer);
     if (lone.length) extra.push(`WARNING: ${lone.join(", ")} did not review this pass, so this pass rests on Codex alone. Tell the user when you report.`);
     for (const r of results.filter((x) => !x.ok)) state.history.push({ at, event: `reviewer-failed:${r.reviewer}`, detail: r.error });
@@ -1232,7 +1534,7 @@ function ladder(ctx, opts) {
 export function main(argv = process.argv.slice(2)) {
   let ctx = { json: argv.includes("--json"), cwd: process.cwd() };
   try {
-    const { cmd, opts } = parseArgs(argv);
+    const { cmd, rest, opts } = parseArgs(argv);
     ctx = { json: Boolean(opts.json), cwd: path.resolve(opts.cwd ?? process.cwd()) };
     if (opts.version || cmd === "version") {
       process.stdout.write(`${VERSION}\n`);
@@ -1242,7 +1544,7 @@ export function main(argv = process.argv.slice(2)) {
       process.stdout.write(`${USAGE}\n`);
       return cmd || opts.help ? EXIT.OK : EXIT.USAGE;
     }
-    const commands = { doctor: () => doctor(ctx), memory: () => memoryCmd(ctx), check: () => check(ctx, opts), checks: () => checks(ctx), watch: () => watch(ctx, opts), spec: () => specCmd(ctx, opts), proof: () => proof(ctx, opts), attacked: () => attacked(ctx, opts), init: () => init(ctx, opts), built: () => built(ctx, opts), review: () => review(ctx, opts), status: () => status(ctx, opts), report: () => report(ctx, opts), ladder: () => ladder(ctx, opts), respec: () => respec(ctx, opts) };
+    const commands = { doctor: () => doctor(ctx), memory: () => memoryCmd(ctx), check: () => check(ctx, opts), checks: () => checks(ctx), watch: () => watch(ctx, opts), spec: () => specCmd(ctx, opts), proof: () => proof(ctx, opts), attacked: () => attacked(ctx, opts), init: () => init(ctx, opts), built: () => built(ctx, opts), review: () => review(ctx, opts), status: () => status(ctx, opts), report: () => report(ctx, opts), ladder: () => ladder(ctx, opts), respec: () => respec(ctx, opts), "spec-review": () => specReviewCmd(ctx, opts), precedent: () => precedentCmd(ctx, rest), precedents: () => precedentsCmd(ctx) };
     if (!commands[cmd]) throw new CrossfireError(`unknown command "${cmd}"\n\n${USAGE}`);
     return commands[cmd]();
   } catch (e) {

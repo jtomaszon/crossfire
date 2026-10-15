@@ -1,12 +1,12 @@
 // The ship or escalation report, and the short status block every command prints.
-import { openAboveNit, openNits } from "./referee.mjs";
+import { builderLegs, openAboveNit, openNits } from "./referee.mjs";
 
 function loc(e) {
   return e.file ? `${e.file}${e.lineStart ? `:${e.lineStart}` : ""}` : "-";
 }
 
 export function statusLine(state, minutesElapsed) {
-  return `CROSSFIRE ${state.slug} · round ${state.round}/${state.maxRounds} · review pass ${state.reviewPass} · ${Math.round(minutesElapsed)}/${state.maxMinutes} min · ${state.phase}`;
+  return `CROSSFIRE ${state.slug} · round ${builderLegs(state)}/${state.maxRounds} · review pass ${state.reviewPass} · ${Math.round(minutesElapsed)}/${state.maxMinutes} min · ${state.phase}`;
 }
 
 /** Report of a review-only check. */
@@ -18,6 +18,7 @@ export function renderCheckReport(check) {
     `- Branch: \`${check.branch ?? "?"}\` at \`${check.head.slice(0, 12)}\`, reviewed against \`${check.base}\` (\`${check.baseSha.slice(0, 12)}\`)`,
     `- Reviewers: ${check.reviewersText}`,
     `- When: ${check.at}`,
+    ...(check.size?.warning ? [`- Size: ${check.size.lines} lines in ${check.size.files} files (lockfiles excluded); past about 400 lines or 10 files, split it`] : []),
   ];
   if (check.since) {
     const d = check.since;
@@ -66,7 +67,7 @@ export function respecSignals(state) {
   if (reflagged.length) signals.push(`fixes re-flagged by a reviewer: ${reflagged.join(", ")}`);
   const gate = state.terminal?.gate;
   if (gate === "G5") signals.push("a new blocker appeared after the first fixes (G5)");
-  if (gate === "G2") signals.push(`findings still open after ${state.round} builder rounds (G2)`);
+  if (gate === "G2") signals.push(`findings still open after ${builderLegs(state)} builder rounds (G2)`);
   return signals;
 }
 
@@ -81,6 +82,13 @@ export function breakerTally(state) {
   return { completed, skipped, failed, text: `${completed} pass(es) completed${skipped ? `, ${skipped} skipped` : ""}${failed ? `, ${failed} failed` : ""}` };
 }
 
+/** The settings a 1.4 loop decided at init, and where each came from. */
+export function settingsText(state) {
+  const d = state.decided ?? {};
+  const grok = state.grok === "auto" ? `grok auto (${d.grokPasses === "first" ? "spec review and first code pass only" : "every pass"})` : `grok ${state.grok}`;
+  return `${grok}, breaker ${state.breaker ? "on" : "off"}${d.breakerFrom ? ` (${d.breakerFrom})` : ""}, max-rounds ${state.maxRounds}${d.maxRoundsFrom ? ` (${d.maxRoundsFrom})` : ""}`;
+}
+
 export function renderReport(state, { minutesElapsed, changedFiles = [], head = null, reviewersText = null }) {
   const t = state.terminal ?? {};
   const shipped = t.kind === "shipped";
@@ -90,7 +98,8 @@ export function renderReport(state, { minutesElapsed, changedFiles = [], head = 
     `- Result: ${shipped ? "shipped" : `escalated at gate ${t.gate}`}: ${t.reason}`,
     `- Spec: \`${state.spec}\``,
     `- Branch diff: \`${state.base}\`..\`${head ?? "HEAD"}\`, ${changedFiles.length} file(s) changed`,
-    `- Builder legs: ${state.round} of ${state.maxRounds}; review passes: ${state.reviewPass}; ${Math.round(minutesElapsed)} of ${state.maxMinutes} min`,
+    `- Builder legs: ${builderLegs(state)} of ${state.maxRounds}; review passes: ${state.reviewPass}; ${Math.round(minutesElapsed)} of ${state.maxMinutes} min`,
+    ...(state.policy ? [`- Spec review: ${state.specReview?.line ?? "not recorded"}`, `- Settings: ${settingsText(state)}`] : []),
     `- Reviewers: ${reviewersText ?? "not recorded"}`,
     `- First review pass: ${state.firstPass ? (state.firstPass.approved ? "approved, nothing to fix" : `${state.firstPass.findings} finding(s)`) : "no review ran"}`,
     `- Breaker: ${state.breaker === false ? "off" : `${breakerTally(state).text}, ${state.ledger.filter((e) => e.source === "breaker").length} proven attack(s)`}`,
@@ -114,7 +123,7 @@ export function renderReport(state, { minutesElapsed, changedFiles = [], head = 
   const reviewedAnswer = (e) => e.status === "closed" || (e.reflaggedPass != null && e.reflaggedPass > (e.answeredPass ?? e.claimedPass ?? -1));
   const withAnswer = breakerItems.filter((e) => lastAnswer(e));
   const reviewedN = withAnswer.filter(reviewedAnswer).length;
-  const reviewerFailures = (state.reviewerRuns ?? []).filter((r) => !r.ok);
+  const reviewerFailures = (state.reviewerRuns ?? []).filter((r) => !r.ok && !r.notRun);
   out.push(
     "",
     "## Evidence",
@@ -123,8 +132,24 @@ export function renderReport(state, { minutesElapsed, changedFiles = [], head = 
     `- Tests the builder named this loop: ${(state.testsNamed ?? []).length}${(state.testsNamed ?? []).length ? ` (${state.testsNamed.slice(0, 12).join(", ")}${state.testsNamed.length > 12 ? ", ..." : ""})` : ""}. Crossfire checks that they pass only through the proof commands above.`,
     `- Breaker: ${state.breaker === false ? "off" : `${breakerTally(state).text}; ${breakerItems.length} attack(s) proven with failing tests; the builder answered ${answered("FIXED")} FIXED and ${answered("DISPUTED")} DISPUTED${unanswered ? `, ${unanswered} unanswered` : ""}${withAnswer.length ? `; ${reviewedN} of these answers went through a later review pass, ${withAnswer.length - reviewedN} did not` : ""}`}`,
     `- Reviewers read the branch diff against \`${state.base}\` read-only: ${reviewersText ?? "not recorded"}${reviewerFailures.length ? `; ${reviewerFailures.length} reviewer pass(es) did not complete` : ""}.`,
+    ...(state.sizeWarnings ?? []).map((w) => `- Size: ${w.lines} lines in ${w.files} files at review pass ${w.pass} (lockfiles excluded); past about 400 lines or 10 files, split it.`),
     "- Not verified by crossfire: anything outside the proof commands (the full test suite, lint, migrations, deploys). CI on the pull request is that gate.",
   );
+  if (t.gate === "SPEC") {
+    const h = t.handoff ?? {};
+    out.push(
+      "",
+      "## The builder's handoff: the spec does not fit",
+      "",
+      `- Severity: ${h.severity ?? "-"}`,
+      `- Summary: ${h.summary ?? "-"}`,
+      `- Tried: ${h.tried ?? "-"}`,
+      `- Situation: ${h.situation ?? "-"}`,
+      `- Synthesis: ${h.synthesis ?? "-"}`,
+      "",
+      `Revise the spec with the person who owns the change: \`crossfire respec --from-loop ${state.slug} --slug <new-slug>\` drafts a new spec from this one (with any findings as known failure modes); after the person approves it, a new loop starts from \`${state.base}\`. The handoff is the builder's view: the person decides whether the spec or the builder is wrong.`,
+    );
+  }
   const accepted = state.ledger.filter((e) => e.status === "wontfix" || (shipped && e.status === "claimed_fixed" && e.severity === "NIT"));
   if (accepted.length) out.push("", `Accepted nits (G7, not re-reviewed): ${accepted.map((e) => e.id).join(", ")}`);
   if (!shipped) {

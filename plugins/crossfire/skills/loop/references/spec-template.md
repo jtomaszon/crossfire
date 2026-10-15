@@ -6,6 +6,21 @@
 
 One paragraph: what changes for whom, and why now.
 
+## Requirements and owners
+
+Question each requirement before it is built: who asked for it, and what breaks without it? Each one has an owner (the person who can say what it means and decides when it is in doubt). Mark the one to **drop first** if the change grows past about 400 lines or 10 files.
+
+- R1 `<requirement>` (owner: `<person>`).
+- R2 `<requirement>` (owner: `<person>`). **Drop first** if this grows.
+
+## What we're deleting
+
+What this change removes or narrows: code, flags, options, steps, defaults. The cheapest code is the code that is deleted; if nothing goes, say "nothing" and why.
+
+- `<what goes>`: `<why it is not needed any more>`.
+
+**Risk:** low | high (one word, then why in brackets: high turns on the breaker, crossfire's internal attacker, for this loop; for changes to deploys, data, permissions, money, validation, or anything hard to undo)
+
 ## Read before building (absolute paths)
 
 - `/abs/path/to/the/code/area/README.md`: why
@@ -42,6 +57,12 @@ The builder may add tests but never edits, weakens or deletes these.
 
 - E2E-1: `<scenario>` -> expected `<observable result>`; covers AC-1, AC-2
 - E2E-2: `<failure scenario>` -> expected `<refusal / error>`; covers AC-4
+
+## Allowed test changes (optional)
+
+Leave this section out unless an existing test file must change: existing test files are not changed unless the spec allows it; add new tests in new files. By default crossfire refuses a builder round that deletes, renames away or changes any line of a test file that exists when the loop starts (the head at `init`), or adds a skip or focus call (`.skip(`, `.only(`, `xit(`, `@pytest.mark.skip`, ...) in a new test file. A test file is known by its name: `*.test.*`, `*_test.*`, `*.spec.*`, `*_spec.*`, `test_*.py`, or under `__tests__/`; helpers and fixtures are not test files. List each existing test file that may change here, with why; nothing else is exempt.
+
+- `tests/old_feature.test.js`: the feature it tests is deleted (see What we're deleting).
 
 ## Proof commands (passed to `crossfire init`)
 
