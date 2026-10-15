@@ -56,6 +56,8 @@ export function saveState(dir, state) {
 }
 
 /** One crossfire command per loop at a time. A lock older than 2 hours is stale. */
+export const LOCK_STALE_MS = 2 * 60 * 60 * 1000;
+
 export function withLock(dir, fn) {
   fs.mkdirSync(dir, { recursive: true });
   const lock = files.lock(dir);
@@ -63,7 +65,7 @@ export function withLock(dir, fn) {
     fs.writeFileSync(lock, String(process.pid), { flag: "wx" });
   } catch {
     const age = Date.now() - fs.statSync(lock).mtimeMs;
-    if (age < 2 * 60 * 60 * 1000) throw new CrossfireError(`another crossfire command is running for this loop (${lock}); wait for it`, EXIT.ENVIRONMENT);
+    if (age < LOCK_STALE_MS) throw new CrossfireError(`another crossfire command is running for this loop (${lock}); wait for it`, EXIT.ENVIRONMENT);
     fs.writeFileSync(lock, String(process.pid));
   }
   try {

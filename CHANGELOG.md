@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.5.0
+
+Loops that cannot step on each other. Two loops in one checkout committed to the same branch and each loop's reviewers saw the other's commits; the files shared by every loop on the machine were rewritten without a lock.
+
+- **One active loop per checkout.** `crossfire init` refuses, changing nothing, while a loop with another slug is active in the checkout. It names that loop and how long ago its last step was, and prints the commands to start the new loop in a worktree of its own, runnable as printed: `git worktree add ../<repo>-<slug> <slug>` (or `-b <slug> <base>` when there is no such branch), `mkdir -p` and `cp` of `.crossfire/specs/<slug>.*` into it, then `cd` and the init line pointing at the copies. With `--from-check`, it says the check belongs to this checkout. The decision and the new loop's state are made under one checkout-wide lock, `.crossfire/runs/.init.lock`. There is no flag to skip it.
+- **`init --force` keeps recorded work.** It archives and restarts only a loop that finished or has recorded nothing since its init (a bare or `--from-check` init); a loop with recorded steps is refused with the worktree commands.
+- **`crossfire abandon --slug <slug>`:** the person ends a loop that looks stuck (active, no crossfire command holding its lock, no step for 3 hours). It re-checks under the loop's lock and escalates at gate `ABANDONED` with the reason `no step since <time> (<N> h <M> min ago); abandoned by the person`. Nothing ends a loop automatically.
+- **Shared files under a lock.** The memory file, the reviewer health file and the precedents file are updated under a `<file>.lock` (retried for 10 seconds; stale after 60), with atomic rewrites. A memory or health update that cannot get the lock is skipped with a warning; a precedent add fails.
+
 ## 1.4.0
 
 Prove the spec, code once. Measured on 26 real loops and 8 checks: the first review pass found 74% of all findings and pass 3 or later found none; Grok found findings no one else did where its sandbox works, and on a host where it fails, crossfire kept calling it; the breaker overlapped the reviewers most of the time, at about 6 minutes a round. So the cross-vendor attack moves to the cheapest point, the spec before any code exists, and the code reviews after it get lean.

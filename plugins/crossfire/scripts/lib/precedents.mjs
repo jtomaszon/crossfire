@@ -6,7 +6,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { gitCommonDir } from "./git.mjs";
-import { CrossfireError } from "./util.mjs";
+import { CrossfireError, withFileLock } from "./util.mjs";
 
 export const PRECEDENTS_IN_PROMPTS = 30;
 export const PRECEDENT_MAX_CHARS = 500;
@@ -30,11 +30,17 @@ export function appendPrecedent(cwd, ruling, date = new Date().toISOString().sli
   if (!text) throw new CrossfireError("the ruling is empty: crossfire precedent add \"<the person's ruling, in one sentence>\"");
   if (text.length > PRECEDENT_MAX_CHARS) throw new CrossfireError(`the ruling is ${text.length} characters; keep it to one sentence of at most ${PRECEDENT_MAX_CHARS}`);
   const file = precedentsFile(cwd);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  if (!fs.existsSync(file)) fs.writeFileSync(file, `${HEADER}\n`);
-  const current = fs.readFileSync(file, "utf8");
   const line = `- ${date} · ${text}`;
-  fs.appendFileSync(file, `${current.endsWith("\n") ? "" : "\n"}${line}\n`);
+  try {
+    withFileLock(`${file}.lock`, () => {
+      if (!fs.existsSync(file)) fs.writeFileSync(file, `${HEADER}\n`);
+      const current = fs.readFileSync(file, "utf8");
+      fs.appendFileSync(file, `${current.endsWith("\n") ? "" : "\n"}${line}\n`);
+    });
+  } catch (e) {
+    if (e.lockBusy) throw new CrossfireError(`the precedent was not added: ${e.message}; run crossfire precedent add again`, e.exitCode);
+    throw e;
+  }
   return line;
 }
 

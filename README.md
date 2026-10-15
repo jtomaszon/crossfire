@@ -194,6 +194,8 @@ Both run read-only and return the same review schema. The focus text carries the
 
 Crossfire runs one change per loop. Running many at once is a plan, not a default:
 
+- **One active loop per checkout:** `crossfire init` refuses while another loop is active in the same checkout (decided under the lock `.crossfire/runs/.init.lock`, so two inits at once cannot both start), and prints the commands that start the new loop in a worktree of its own, for example `git worktree add ../<repo>-<slug> -b <slug> main`, a copy of `.crossfire/specs/<slug>.*`, and the init line. There is no flag to skip it. `init --force` restarts only a loop that finished or has recorded nothing since its init.
+- **A stuck loop:** when init says a loop looks stuck (no step for 3 hours and no crossfire command running), the person can end it with `crossfire abandon --slug <slug>`: it escalates at gate `ABANDONED` with a report. Crossfire never ends a loop by itself.
 - **2 concurrent agents per loop:** the one following it, plus a builder or breaker. With a limit of N concurrent agents, run at most N/2 loops.
 - **Merging:** decide how the branches merge before starting them (one at a time, or a batch tested once), how long CI takes per pull request, and how many PRs will be open at once.
 - **Proof commands:** each says what it proves for its change; the full suite belongs to CI.

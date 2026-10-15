@@ -49,7 +49,7 @@ test("AC-17: the review skill, builder agent, README and CHANGELOG describe 1.4.
   assert.match(readme, /\| G2 round cap \|.*default 2 with a current spec review, 3 without/);
   assert.match(readme, /\| SPEC \|/);
   const changelog = read("CHANGELOG.md");
-  assert.match(changelog.split("\n## ")[1], /^1\.4\.0\n/, "1.4.0 is the newest entry");
+  assert.match(changelog, /^## 1\.4\.0$/m, "1.4.0 has an entry");
 });
 
 test("AC-17: the public docs carry generic examples only (no local paths or host names)", () => {
@@ -60,11 +60,13 @@ test("AC-17: the public docs carry generic examples only (no local paths or host
   }
 });
 
-test("the version is 1.4.0 in package.json, plugin.json and the CLI", () => {
-  assert.equal(JSON.parse(read("package.json")).version, "1.4.0");
-  assert.equal(JSON.parse(read(`${PLUGIN}/.claude-plugin/plugin.json`)).version, "1.4.0");
+test("the version agrees in package.json, plugin.json, the CLI and the newest CHANGELOG entry", () => {
+  const version = JSON.parse(read("package.json")).version;
+  assert.match(version, /^\d+\.\d+\.\d+$/);
+  assert.equal(JSON.parse(read(`${PLUGIN}/.claude-plugin/plugin.json`)).version, version);
   const r = spawnSync(process.execPath, [CLI, "--version"], { encoding: "utf8" });
-  assert.equal(r.stdout.trim(), "1.4.0");
+  assert.equal(r.stdout.trim(), version);
+  assert.equal(read("CHANGELOG.md").split("\n## ")[1].split("\n")[0], version, "the newest CHANGELOG entry is this version");
 });
 
 test("R4: README, spec template, CHANGELOG, loop skill and builder agent state the test rule in one sentence", () => {

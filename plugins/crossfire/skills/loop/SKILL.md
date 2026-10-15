@@ -114,7 +114,8 @@ Before starting loops in parallel, answer with numbers, and tell the user:
 - **Merging:** how the branches will merge (one at a time, or a batch tested once), how long CI takes on a pull request, and how many PRs will be open at once. Prefer few open PRs and a plan written before the work starts.
 - **Proof commands:** what each one proves for its change. Keep them to what the change touches; the full suite is CI's job.
 - **Liveness:** whoever coordinates checks every loop at least hourly with `crossfire status` and acts on `STALLED`; "waiting" with no new step for an hour is a stall, not progress.
-- Several loops can run at once only in separate worktrees with separate slugs.
+- Several loops can run at once only in separate worktrees with separate slugs. One loop per checkout is enforced: `crossfire init` refuses while another loop is active in the checkout (and `init --force` will not restart a loop that has recorded steps). When init refuses, run the commands it prints: they make the new worktree, copy the spec and start the loop there.
+- `crossfire abandon --slug <slug>` only on the person's explicit words, and only for a loop init reports as looking stuck (no step for 3 hours, no command running). Never edit or delete files under `.crossfire/` to get around a refusal.
 
 ## Gates the referee enforces (for explaining an escalation)
 
