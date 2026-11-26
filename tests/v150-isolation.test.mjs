@@ -190,6 +190,6 @@ test("AC-6: the loop skill, README and CHANGELOG 1.5.0 describe one loop per che
   assert.match(readme, /crossfire abandon --slug <slug>/);
   const changelog = read("CHANGELOG.md");
   assert.match(changelog, /^## 1\.5\.0$/m);
-  assert.match(changelog.split("\n## ")[1], /crossfire abandon/);
-  assert.match(changelog.split("\n## ")[1], /\.init\.lock/);
+  assert.match(changelog.split("\n## ").find((e) => e.startsWith("1.5.0\n")), /crossfire abandon/);
+  assert.match(changelog.split("\n## ").find((e) => e.startsWith("1.5.0\n")), /\.init\.lock/);
 });
