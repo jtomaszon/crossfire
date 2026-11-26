@@ -64,6 +64,8 @@ Both reviewers run read-only inside a bubblewrap sandbox on Linux: Codex ships i
 
 Allowing it is a host security decision: the usual fix is an AppArmor profile that grants `userns` to the specific bubblewrap binaries only (Codex's bundled one and `/usr/bin/bwrap`), the way Ubuntu does for other sandboxing apps. macOS is not affected.
 
+**Grok not signed in.** When Grok's latest review on this machine failed because it is not signed in (`Not signed in`, `not logged in`, `please log in`, `unauthenticated`, `grok login`), `crossfire doctor` says so on its grok line, with the fix: `grok login`, then one review with `--grok on` (under `--grok auto`, a Grok that failed its last 3 reviews is skipped for up to 7 days, so it would not be tried again by itself). The auto-skip line and the `REVIEWERS:` line say `not signed in; run grok login` instead of only how many times it failed. A success clears it.
+
 ## Use
 
 In a git repository, ask Claude for a change and say "crossfire", or run `/crossfire:loop <what to build>`. Claude will:
@@ -71,7 +73,7 @@ In a git repository, ask Claude for a change and say "crossfire", or run `/cross
 1. Check the reviewers (`crossfire doctor`).
 2. Gather context and plan through superpowers: `brainstorming` explores the repository (its docs for the area, existing patterns, callers; for someone else's PR, the PR conversation), then `writing-plans` writes a plan for a zero-context engineer with a **Review Focus** of likely failure modes. Crossfire adds this repository's **memory**: the kinds of problems reviewers found here before. Spec and plan stay out of git.
 3. **Prove the spec** (`crossfire spec-review`): Codex and Grok review the spec and plan as a design before any code exists. Claude revises the spec for their findings and records a response to each. **You approve the revised spec**, with the findings and responses in front of you; after that the loop runs on its own.
-4. Make a branch or worktree and `crossfire init`.
+4. Make a branch or worktree and `crossfire init`. Init first runs every proof command once (preflight): a command that cannot run here stops it (exit 5); an E2E command may fail, since the change is not built yet; an invariant must already pass when the branch has no commits on top of the base, or init stops (exit 2) and names it (fix the command, or pass it as `--e2e` if it is meant to fail until the change is built). On a branch that already has commits on top of the base (a `--from-check` pull request, a loop on top of earlier work), a failing invariant does not stop init; `PREFLIGHT:` says how many fail.
 5. Loop, every round:
    1. The builder implements and commits (or stops with `SPEC_MISMATCH` when the spec cannot be built as written).
    2. Crossfire runs the proof commands itself (G0), and refuses a round that weakens tests.
@@ -107,7 +109,7 @@ Claude revises the spec for the findings and writes `.crossfire/specs/<slug>.rev
 
 Flags always win. A loop stores the settings it decided; a loop started on 1.3 keeps its own (Grok on every pass under auto).
 
-**Grok on a broken host.** Under `--grok auto`, when Grok's last 3 attempts on this machine all failed and the latest is under 7 days old, crossfire skips it without calling it (`grok: skipped (...)`); `crossfire doctor` shows why, and `--grok on` calls it anyway.
+**Grok on a broken host.** Under `--grok auto`, when Grok's last 3 attempts on this machine all failed and the latest is under 7 days old, crossfire skips it without calling it (`grok: skipped (...)`); `crossfire doctor` shows why, and `--grok on` calls it anyway. When the latest failure is a sign-in failure, the line says `not signed in; run grok login` (see "Grok not signed in" above).
 
 **Precedents.** `crossfire precedent add "<ruling>"` records a question the owner settled (one dated line in `<git common dir>/crossfire/precedents.md`); builder and breaker briefs and every reviewer's focus carry the latest 30 under "Settled by the owner; do not raise these again". The loop skill adds one only on the person's explicit words. `crossfire precedents` lists them.
 
@@ -115,7 +117,7 @@ For the delivery habits around the loop (small PRs, what "done" means after SHIP
 
 ## Review a PR without building anything
 
-`/crossfire:review <PR number, URL or branch>` reviews what already exists: Claude checks the PR out into its own worktree and runs `crossfire check`, which asks Codex (and Grok when it can run) for one review against the base. No spec, no builder, no loop. You get the `REVIEWERS:` line, the verdict and the findings, with a report in `.crossfire/checks/<id>/`. Nothing is posted to GitHub unless you ask.
+`/crossfire:review <PR number, URL or branch>` reviews what already exists: Claude checks the PR out into its own worktree and runs `crossfire check`, which asks Codex (and Grok when it can run) for one review against the base. The reviewers get the merge-base of the base and HEAD (`git merge-base <base> HEAD`, recomputed on every check, `--since` re-checks too), and are told that commits on the base after it are not part of the change; the check records it as `mergeBase` beside `base` and `baseSha` (the base ref's commit). A branch with no merge-base with the base is refused (exit 2). `crossfire check` prints no size warning: a pull request cannot be split in review-only mode. No spec, no builder, no loop. You get the `REVIEWERS:` line, the verdict and the findings, with a report in `.crossfire/checks/<id>/`. Nothing is posted to GitHub unless you ask.
 
 If you want the findings fixed, the same findings start a loop at its fix round, with no builder round first:
 
@@ -133,7 +135,7 @@ The check counts as the loop's first review pass.
 |---|---|
 | SPEC | the builder returned `SPEC_MISMATCH`: the spec cannot be built as written. No proof command runs; the report carries its handoff (severity, summary, what it tried, the situation, its synthesis) and suggests a revised spec (`crossfire respec`) |
 | G0 proof | the spec's E2E and invariant commands fail (the builder gets the output and tries again; review only starts on green) |
-| G1 malformed | the builder's result or the Codex review is malformed twice in a row; a round that weakens tests is malformed: existing test files are not changed unless the spec allows it; add new tests in new files. A test file is known by its name: `*.test.*`, `*_test.*`, `*.spec.*`, `*_spec.*`, `test_*.py`, or under `__tests__/`; helpers and fixtures are not test files. Only the commits after the head the loop started from count (a `--from-check` pull request's own commits do not), and only on loops started on 1.4; a loop started on 1.3 keeps the 1.3 rules (a file the "Allowed test changes" of the spec as approved at init names may change; renames with no content change pass; a new test file may not call a skip or focus API) |
+| G1 malformed | the builder's result or the Codex review is malformed twice in a row; a round that weakens tests is malformed: existing test files are not changed unless the spec allows it; add new tests in new files. When an existing test file only gained lines, the refusal adds a hint: move the new tests into a new test file next to it. A test file is known by its name: `*.test.*`, `*_test.*`, `*.spec.*`, `*_spec.*`, `test_*.py`, or under `__tests__/`; helpers and fixtures are not test files. Only the commits after the head the loop started from count (a `--from-check` pull request's own commits do not), and only on loops started on 1.4; a loop started on 1.3 keeps the 1.3 rules (a file the "Allowed test changes" of the spec as approved at init names may change; renames with no content change pass; a new test file may not call a skip or focus API) |
 | G2 round cap | findings are still open after `--max-rounds` builder legs crossfire ran (default 2 with a current spec review, 3 without; with `--from-check`, the pull request's own code is not one) |
 | G3 convergence | a reviewer re-flags a finding the builder said it fixed, or the builder disputes a non-nit |
 | G4 suspect | a new finding lands where a fix was just claimed |
@@ -143,9 +145,9 @@ The check counts as the loop's first review pass.
 
 **Before a review pass, the breaker, where it pays.** A cold `crossfire:breaker` subagent attacks the round (transactions and rollback, stale in-memory state, concurrency, retries, ordering, missing data) and must prove each attack with a failing test in a throwaway worktree; it never touches the branch. Proven attacks get one harden round before the reviewers see the branch. It is internal: it never escalates, and a builder's dispute goes to the reviewers to judge. It overlaps the reviewers most of the time, so with a current spec review it is off unless the spec's `**Risk:** high` line or `--breaker on` turns it on; without one it runs as in 1.3.
 
-**Size.** When a review pass starts on a diff over about 400 changed lines or 10 files (lockfiles excluded), crossfire prints `WARNING: this change is <N> lines in <M> files; past about 400 lines or 10 files, split it` and notes it in the report's Evidence. It does not block.
+**Size.** When a loop's review pass starts on a diff over about 400 changed lines or 10 files (lockfiles excluded), crossfire prints `WARNING: this change is <N> lines in <M> files; past about 400 lines or 10 files, split it` and notes it in the report's Evidence. It does not block. `crossfire check` does not print it (since 1.6.0).
 
-**What the referee requires of each round:** the spec has a "How this could fail" section (at least 3 items); every fixed BLOCKER or CHANGES finding names the broadest rule the fix enforces and at least 3 tested variants of it.
+**What the referee requires of each round:** the spec has a "How this could fail" section (at least 3 items); every fixed BLOCKER or CHANGES finding names the broadest rule the fix enforces and at least 3 tested variants of it, and `where` the fix is: `file:line` or `file:start-end`, several separated by commas, where a bare line or range takes the file before it (`App.tsx:349-372, 414-419`) and a test file may be named alone (`tests/foo.test.mjs`); lines start at 1.
 
 Blockers never downgrade. Anything ambiguous escalates instead of looping again. When reviewers disagree, the stricter one wins: a blocker from either reviewer must be fixed.
 
@@ -160,7 +162,7 @@ crossfire doctor                     reviewers installed, official, logged in?
 crossfire spec-review --slug <s> --spec <file> [--plan <file>] [--base <ref>] [--grok auto|on|off]
                                      prove the spec: Codex (+ Grok) review it as a design, before any code
 crossfire precedent add "<ruling>"   record the owner's ruling; crossfire precedents lists them
-crossfire check [--base <ref>] [--focus <text>] [--spec <file>] [--name <id>]   one review of the current branch, no loop
+crossfire check [--base <ref>] [--focus <text>] [--spec <file>] [--name <id>]   one review of the current branch (against its merge-base with the base), no loop
 crossfire checks                     list this repository's checks
 crossfire memory                     what reviewers found in this repository before (local, never committed)
 crossfire check --since <id> --name <new id>   re-check after changes: fixed, still open, new
@@ -188,7 +190,7 @@ Claude cannot run the vendors' review slash commands itself (they are user-only)
 - Codex: `node <codex plugin>/scripts/codex-companion.mjs adversarial-review --wait --json --base <base sha> --cwd <repo> "<focus>"`
 - Grok Build: `node <grok-build plugin>/scripts/grok-bridge.mjs critique --wait --json --base <base sha> --cwd <repo> "<focus>"`
 
-Both run read-only and return the same review schema. The focus text carries the spec and the list of earlier findings with their tags, so a reviewer can say "[F2] still not fixed" and the referee can tell a repeat from a new problem. For `crossfire spec-review`, `--cwd` is a throwaway worktree on the base with the spec committed in it, and the focus asks for a design review instead.
+Both run read-only and return the same review schema. Each review gets a timeout: by default 20 minutes for Codex and 15 for Grok; `--timeout-min` (and `--timeout-sec` on `spec-review`) applies to both. The focus text carries the spec and the list of earlier findings with their tags, so a reviewer can say "[F2] still not fixed" and the referee can tell a repeat from a new problem. For `crossfire spec-review`, `--cwd` is a throwaway worktree on the base with the spec committed in it, and the focus asks for a design review instead.
 
 ## Before running many loops
 

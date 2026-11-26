@@ -132,23 +132,24 @@ export function failureReason(r, parsed) {
   return `${r.status !== 0 ? `exit ${r.status}: ` : ""}${line.slice(0, 400) || parsed.error}`;
 }
 
-/** Run one reviewer. Never throws; a failure comes back as ok:false. */
+/** Run one reviewer. Never throws; a failure comes back as ok:false. The result carries the timeout it ran under. */
 export function runReviewer(plugin, { cwd, base, focus, timeoutMs }) {
   const spec = OFFICIAL[plugin.key];
   const args = [plugin.script, spec.reviewCommand, "--wait", "--json", "--base", base, "--cwd", cwd, focus];
   const started = Date.now();
   const r = run(process.execPath, args, { cwd, env: reviewerEnv(plugin.key), timeoutMs });
   const seconds = Math.round((Date.now() - started) / 1000);
-  if (r.timedOut) return { reviewer: plugin.key, required: spec.required, ok: false, seconds, error: `timed out after ${seconds}s` };
+  if (r.timedOut) return { reviewer: plugin.key, required: spec.required, ok: false, seconds, timeoutMs, error: `timed out after ${seconds}s` };
   const parsed = parseReviewPayload(r.stdout, { cwd });
-  if (!parsed.ok) return { reviewer: plugin.key, required: spec.required, ok: false, seconds, error: failureReason(r, parsed) };
-  return { reviewer: plugin.key, required: spec.required, seconds, ...parsed };
+  if (!parsed.ok) return { reviewer: plugin.key, required: spec.required, ok: false, seconds, timeoutMs, error: failureReason(r, parsed) };
+  return { reviewer: plugin.key, required: spec.required, seconds, timeoutMs, ...parsed };
 }
 
 /** Focus for a review-only check: no loop, so no ledger; the spec or the user's focus, when given. */
-export function buildCheckFocus({ base, specText = "", focusText = "", previous = [], precedents = [] }) {
+export function buildCheckFocus({ base, mergeBase = null, specText = "", focusText = "", previous = [], precedents = [] }) {
   const lines = [
     `Review the branch diff against ${base} as a pull request reviewer: correctness, security, data integrity and regressions.`,
+    ...(mergeBase ? [`The diff is from the merge-base ${String(mergeBase).slice(0, 12)} of ${base}, where this branch left it; commits on ${base} after it are not part of this change.`] : []),
     "Pay particular attention to how it could fail in production: transactions and rollback (including nested transactions), stale in-memory state, concurrency, retries and idempotency, ordering, missing or unexpected data.",
     "",
     "Severity: critical or high = must be fixed before this merges; medium = should be fixed; low = nit.",

@@ -113,18 +113,21 @@ const quote = (t) => JSON.stringify(t.length > 120 ? `${t.slice(0, 117)}...` : t
  * Every way the commits after `fromSha` (the head the loop started from) weaken tests: an existing
  * test file (one at `fromSha`) that is deleted, renamed to a name that is not a test file, or
  * changed in any line; and a skip or focus call in a new test file. Files the spec's "## Allowed
- * test changes" section names are exempt. { problems: string[] }; a diff that cannot be read, or a
- * HEAD that no longer descends from `fromSha` (rewritten history), is a problem too (fail closed).
+ * test changes" section names are exempt. { problems: string[], hints: string[] }; a diff that
+ * cannot be read, or a HEAD that no longer descends from `fromSha` (rewritten history), is a problem
+ * too (fail closed). `hints` names the existing test files whose only problems are added lines (new
+ * tests put in an old file): advice for the message, never a change to what is refused.
  */
 export function testChanges(repo, fromSha, specText) {
   const range = `${fromSha}...HEAD`;
   const listed = changedEntries(repo, range);
-  if (listed.error) return { problems: [`could not read the branch diff to check the test files (${listed.error}); nothing is accepted until it can be read`] };
+  if (listed.error) return { problems: [`could not read the branch diff to check the test files (${listed.error}); nothing is accepted until it can be read`], hints: [] };
   if (git(repo, ["merge-base", "--is-ancestor", fromSha, "HEAD"]).status !== 0) {
-    return { problems: [`HEAD does not descend from ${String(fromSha).slice(0, 12)}, the commit the loop started from (the branch was reset or rewritten); nothing is accepted until it does`] };
+    return { problems: [`HEAD does not descend from ${String(fromSha).slice(0, 12)}, the commit the loop started from (the branch was reset or rewritten); nothing is accepted until it does`], hints: [] };
   }
   const allowed = new Set(allowedTestFiles(specText));
   const problems = [];
+  const hints = [];
   let mergeBase;
   const findMergeBase = () => {
     if (mergeBase === undefined) {
@@ -170,6 +173,7 @@ export function testChanges(repo, fromSha, specText) {
         for (const l of lines.added) found.push(`${e.new}:${l.line}: adds a line to an existing test file: ${quote(l.text)}`);
       }
       problems.push(...(found.length ? found : [`${e.new}: changes an existing test file${renamed}`]));
+      if (!lines.error && lines.added.length && !lines.removed.length) hints.push(e.new);
       continue;
     }
     // A new test file (added, or renamed or copied from a file that was not a test file): every
@@ -184,5 +188,5 @@ export function testChanges(repo, fromSha, specText) {
       if (skipCallIn(text)) problems.push(`${e.new}:${i + 1}: adds a skip or focus call: ${quote(text)}`);
     });
   }
-  return { problems };
+  return { problems, hints };
 }
