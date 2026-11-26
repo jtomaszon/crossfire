@@ -105,6 +105,7 @@ export function buildSpecFocus({ slug, base, hasPlan, precedents = [] }) {
     "- untestable or ambiguous acceptance criteria;",
     "- missing failure modes (transactions and rollback, stale state, concurrency, retries, ordering, missing data, the boundaries it touches);",
     "- conflicts with the code it names: a file, function, behaviour or assumption that is not what the repository has;",
+    "- existing test files that pin behaviour the spec changes (their assertions would fail once it is built) and that the spec's \"Allowed test changes\" section does not name, as a gap: name each file and line (the builder may not change an existing test file that section does not name);",
     "- cheaper ways to the same goal.",
     "",
     "A finding about something missing cites the heading where it belongs (the line of that heading in the spec or plan).",

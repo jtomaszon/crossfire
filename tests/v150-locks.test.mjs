@@ -389,7 +389,7 @@ test("docs: README, the loop skill and CHANGELOG 1.5.0 describe unlock (person-o
   const readme = read("README.md");
   assert.match(readme, /crossfire unlock --slug <slug>/);
   assert.match(readme, /while its process is alive/);
-  const entry = read("CHANGELOG.md").split("\n## ")[1];
+  const entry = read("CHANGELOG.md").split("\n## ").find((e) => e.startsWith("1.5.0\n"));
   assert.match(entry, /^1\.5\.0\n/);
   assert.match(entry, /crossfire unlock/);
   assert.match(entry, /best effort/);

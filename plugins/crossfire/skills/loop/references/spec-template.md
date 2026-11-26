@@ -60,7 +60,7 @@ The builder may add tests but never edits, weakens or deletes these.
 
 ## Allowed test changes (optional)
 
-Leave this section out unless an existing test file must change: existing test files are not changed unless the spec allows it; add new tests in new files. By default crossfire refuses a builder round that deletes, renames away or changes any line of a test file that exists when the loop starts (the head at `init`), or adds a skip or focus call (`.skip(`, `.only(`, `xit(`, `@pytest.mark.skip`, ...) in a new test file. A test file is known by its name: `*.test.*`, `*_test.*`, `*.spec.*`, `*_spec.*`, `test_*.py`, or under `__tests__/`; helpers and fixtures are not test files. List each existing test file that may change here, with why; nothing else is exempt.
+Leave this section out unless an existing test file must change: existing test files are not changed unless the spec allows it; add new tests in new files. By default crossfire refuses a builder round that deletes, renames away or changes any line of a test file that exists when the loop starts (the head at `init`), or adds a skip or focus call (`.skip(`, `.only(`, `xit(`, `@pytest.mark.skip`, ...) in a new test file. A test file is known by its name: `*.test.*`, `*_test.*`, `*.spec.*`, `*_spec.*`, `test_*.py`, or under `__tests__/`; helpers and fixtures are not test files. List each existing test file that may change here, with why; nothing else is exempt. Before writing it, look for existing tests that pin behaviour this spec changes (assertions that would fail once it is built): each one is listed here, or the change is wrong. `crossfire spec-review` asks the reviewers for the ones this section does not name, as a gap.
 
 - `tests/old_feature.test.js`: the feature it tests is deleted (see What we're deleting).
 
@@ -69,7 +69,7 @@ Leave this section out unless an existing test file must change: existing test f
 Crossfire runs these itself after every builder round; review only starts when all exit 0. They run every round, so keep them to what this change touches, and say what each one proves. A command that proves nothing about this change is cost, not safety; the full suite is CI's job on the pull request.
 
 - `--e2e "<command that runs the E2E tests for this change>"`. Proves: `<which acceptance criteria>`
-- `--invariant "<command that checks an invariant, e.g. a lint rule or a grep that must find nothing>"`. Proves: `<what must not break>`
+- `--invariant "<command that checks an invariant, e.g. a lint rule or a grep that must find nothing>"`. Proves: `<what must not break>`. An invariant must pass before the change: on a branch with no commits on top of the base, a failing one stops `crossfire init`. A command meant to fail until the change is built is an `--e2e`.
 
 Example: a docs-only change declares a link check (`--invariant "npm run check-links"`. Proves: no broken links), not the full test suite.
 

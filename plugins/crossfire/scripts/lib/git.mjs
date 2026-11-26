@@ -54,6 +54,13 @@ export function dirtyPaths(cwd) {
   return r.stdout.split("\n").filter(Boolean);
 }
 
+/** The best common ancestor of `a` and `b` (`git merge-base`), or null when they share no history. */
+export function mergeBase(cwd, a, b) {
+  const r = git(cwd, ["merge-base", a, b]);
+  const sha = r.stdout?.trim();
+  return r.status === 0 && /^[0-9a-f]{40,64}$/.test(sha) ? sha : null;
+}
+
 export function commitsAhead(cwd, base) {
   const r = git(cwd, ["rev-list", "--count", `${base}..HEAD`]);
   return r.status === 0 ? Number(r.stdout.trim()) : 0;

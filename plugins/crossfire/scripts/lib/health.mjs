@@ -62,14 +62,25 @@ export function recordAttempt(reviewer, { ok, at, seconds, error }, file = healt
   }
 }
 
-/** { attempts, consecutiveFailures, lastError, lastOkAt } for a reviewer. */
+const SIGN_IN_RE = /not signed in|not logged in|please (?:log|sign) in|unauthenticated|grok login/i;
+
+/** Is a recorded reviewer error (its first line, as `recordAttempt` keeps it) a sign-in failure? */
+export function signInFailure(error) {
+  return typeof error === "string" && SIGN_IN_RE.test(error);
+}
+
+/**
+ * { attempts, consecutiveFailures, lastError, lastFailAt, lastOkAt, lastFailureSignIn } for a reviewer.
+ * `lastFailureSignIn` (computed, never stored): the latest attempt failed, and failed signing in.
+ */
 export function summarize(health, reviewer) {
   const list = health[reviewer] ?? [];
   let consecutiveFailures = 0;
   for (let i = list.length - 1; i >= 0 && !list[i].ok; i -= 1) consecutiveFailures += 1;
   const lastFail = [...list].reverse().find((a) => !a.ok);
   const lastOk = [...list].reverse().find((a) => a.ok);
-  return { attempts: list.length, consecutiveFailures, lastError: lastFail?.error ?? null, lastFailAt: lastFail?.at ?? null, lastOkAt: lastOk?.at ?? null };
+  const lastFailureSignIn = consecutiveFailures > 0 && signInFailure(lastFail?.error);
+  return { attempts: list.length, consecutiveFailures, lastError: lastFail?.error ?? null, lastFailAt: lastFail?.at ?? null, lastOkAt: lastOk?.at ?? null, lastFailureSignIn };
 }
 
 export const AUTO_SKIP_FAILURES = 3;
@@ -77,16 +88,25 @@ export const AUTO_SKIP_DAYS = 7;
 
 /**
  * `--grok auto` on a host where the reviewer keeps failing: its last 3 attempts on this machine
- * all failed and the latest failure is under 7 days old. Returns { failures, line } (skip it,
+ * all failed and the latest failure is under 7 days old. Returns { failures, signIn, line } (skip it,
  * without calling it), or null (call it). Skips are never recorded as attempts, so the 7 days run out.
+ * When the latest failure is a sign-in failure, the line says so and how to sign in.
  */
 export function autoSkip(health, reviewer, now = Date.now()) {
   const s = summarize(health, reviewer);
   if (s.consecutiveFailures < AUTO_SKIP_FAILURES) return null;
   const last = Date.parse(s.lastFailAt ?? "");
   if (!Number.isFinite(last) || now - last >= AUTO_SKIP_DAYS * 24 * 60 * 60 * 1000) return null;
+  if (s.lastFailureSignIn) {
+    return {
+      failures: s.consecutiveFailures,
+      signIn: true,
+      line: `${reviewer}: skipped (not signed in; run ${reviewer} login, then one review with --${reviewer} on; failed the last ${s.consecutiveFailures} times on this machine)`,
+    };
+  }
   return {
     failures: s.consecutiveFailures,
+    signIn: false,
     line: `${reviewer}: skipped (failed the last ${s.consecutiveFailures} times on this machine; crossfire doctor shows why; it is tried again after ${AUTO_SKIP_DAYS} days or with --${reviewer} on)`,
   };
 }

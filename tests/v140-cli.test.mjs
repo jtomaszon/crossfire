@@ -637,6 +637,6 @@ test("AC-15: a review pass on a change over 400 lines or 10 files warns, and the
   sb.queue("codex", approve);
   sb.queue("grok", approve);
   const c = sb.cf("check", "--base", "main", "--name", "many");
-  assert.match(c.stdout, /WARNING: this change is \d+ lines in 13 files; past about 400 lines or 10 files, split it/);
-  assert.match(fs.readFileSync(`${sb.repo}/.crossfire/checks/many/report.md`, "utf8"), /- Size: \d+ lines in 13 files/);
+  assert.doesNotMatch(c.stdout, /WARNING: this change is/);
+  assert.doesNotMatch(fs.readFileSync(`${sb.repo}/.crossfire/checks/many/report.md`, "utf8"), /- Size:/);
 });

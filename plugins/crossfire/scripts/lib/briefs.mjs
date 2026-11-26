@@ -1,5 +1,6 @@
 // Builder briefs (what the builder subagent reads) and validation of what it returns.
 import { itemsOwed } from "./referee.mjs";
+import { isTestFile } from "./testguard.mjs";
 
 export const BUILD_STATUSES = ["DONE", "PARTIAL", "FAILED", "SPEC_MISMATCH"];
 export const HANDOFF_SEVERITIES = ["low", "medium", "high"];
@@ -26,16 +27,32 @@ export const MIN_VARIANTS = 3;
 /** One or more file:line cites, a line or a range, e.g. "lib/app.rb:120, spec/app_spec.rb:40-52". */
 export const WHERE_RE = /^\s*[^\s,:]+:\d+(-\d+)?(\s*,\s*[^\s,:]+:\d+(-\d+)?)*\s*$/;
 
-/** A `where` value: one or more file:line or file:start-end, lines from 1, ranges in order. */
+const CITE_RE = /^([^\s,:]+):(\d+)(?:-(\d+))?$/;
+const BARE_RE = /^(\d+)(?:-(\d+))?$/;
+const PATH_RE = /^[^\s,:]+$/;
+
+/**
+ * A `where` value: a comma-separated list whose items are `file:line` or `file:start-end`, a bare
+ * `line` or `start-end` (inheriting the most recent file, so never first), or a test file named alone
+ * (by `isTestFile`). Lines start at 1 and ranges are in order; anything else is rejected.
+ */
 export function validWhere(value) {
-  const s = String(value ?? "");
-  if (!WHERE_RE.test(s)) return false;
-  return s.split(",").every((part) => {
-    const [, a, b] = /:(\d+)(?:-(\d+))?\s*$/.exec(part.trim()) ?? [];
-    const start = Number(a);
-    const end = b === undefined ? start : Number(b);
-    return start >= 1 && end >= start;
-  });
+  if (typeof value !== "string") return false;
+  let file = null;
+  for (const item of value.split(",").map((x) => x.trim())) {
+    const cite = CITE_RE.exec(item);
+    const bare = cite ? null : BARE_RE.exec(item);
+    if (cite || bare) {
+      if (bare && !file) return false; // a bare line or range needs a file before it
+      const [a, b] = cite ? [cite[2], cite[3]] : [bare[1], bare[2]];
+      const start = Number(a);
+      const end = b === undefined ? start : Number(b);
+      if (!(start >= 1 && end >= start)) return false;
+      if (cite) file = cite[1];
+    } else if (PATH_RE.test(item) && isTestFile(item)) file = item;
+    else return false;
+  }
+  return true;
 }
 
 /** Fixing a real (non-nit) finding must name the rule and test its variants. */
@@ -239,7 +256,7 @@ export function validateBuildResult(result, state, repoFacts) {
         if (typeof f.rule !== "string" || f.rule.trim().length < 15) problems.push(`${f.id}: FIXED needs \`rule\`, the broadest rule the fix enforces (one sentence)`);
         const variants = Array.isArray(f.variants) ? f.variants.filter((v) => v && typeof v.test === "string" && v.test.trim()) : [];
         if (variants.length < MIN_VARIANTS) problems.push(`${f.id}: FIXED needs at least ${MIN_VARIANTS} \`variants\` of the rule, each with the \`test\` that covers it (got ${variants.length})`);
-        if (!validWhere(f.where)) problems.push(`${f.id}: FIXED needs \`where\`, the file:line of the fix (e.g. "lib/app.rb:120" or "lib/app.rb:15-20"; several separated by commas; lines start at 1)`);
+        if (!validWhere(f.where)) problems.push(`${f.id}: FIXED needs \`where\`, the file:line of the fix (e.g. "lib/app.rb:120" or "lib/app.rb:15-20"; several separated by commas, where a bare line or range takes the file before it, e.g. "lib/app.rb:15-20, 40"; a test file may be named alone; lines start at 1)`);
       }
       answered.set(f.id, f);
     });

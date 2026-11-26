@@ -42,7 +42,9 @@ Pass `--spec <file>` too if the user gave one. Exit 3 means the Codex review fai
 
 What the output can also say:
 - `grok: skipped (failed the last N times on this machine; ...)`: under the default `--grok auto`, Grok is not called on a machine where its last 3 attempts failed in the last 7 days; the check rests on Codex alone. `crossfire doctor` shows why; `--grok on` calls it anyway.
-- `WARNING: this change is <N> lines in <M> files; past about 400 lines or 10 files, split it` (lockfiles not counted): pass it on to the user; it does not block the check.
+- `grok: skipped (not signed in; run grok login, ...)`: the same, and the latest failure was Grok not being signed in. Tell the user to run `grok login`, then one review with `--grok on`.
+- The reviewers review the diff from the merge-base of the base and the branch, so commits that landed on the base after the branch left it are not part of the change. A branch with no history in common with the base is refused (exit 2): check the base.
+- `crossfire check` prints no size warning: a pull request cannot be split in review-only mode (a loop's review passes still warn past about 400 lines or 10 files).
 - The reviewers are told about the owner's precedents ("Settled by the owner; do not raise these again", from `crossfire precedents`), so they do not re-raise settled questions.
 
 ## 4. Report
